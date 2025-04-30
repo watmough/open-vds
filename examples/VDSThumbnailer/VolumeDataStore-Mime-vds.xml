@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<mime-info xmlns='http://www.freedesktop.org/standards/shared-mime-info'>
+    <mime-type type="application/vds">
+    <!-- OpenGroup Seismic VDS VolumeDataStore. Register this file using xdg-mime install VolumeDataStore-Mime-vds.xml. Confirm that the command xdg-mime query filetype somefile.vds has the output. --> 
+    <comment>application/vds</comment>
+    <glob pattern="*.vds"/>
+    </mime-type>
+</mime-info>

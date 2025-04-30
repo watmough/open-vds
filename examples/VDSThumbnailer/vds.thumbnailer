@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+TryExec=vds-thumbnailer
+Exec=vds-thumbnailer '%i' '%o' %s
+MimeType=application/vds;
