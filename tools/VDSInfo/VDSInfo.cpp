@@ -29,6 +29,10 @@
 #include <PrintHelpers.h>
 #include <HelpConnection.h>
 
+#ifdef _WIN32
+#include <WindowsUnicodeMain.h>
+#endif
+
 namespace OpenVDS
 {
   extern Json::Value SerializeVolumeDataLayoutDescriptor(VolumeDataLayout const &volumeDataLayout);
@@ -168,7 +172,11 @@ static std::string convertToString(const Json::Value &value)
 }
 
 
+#ifdef UNICODE_MAIN
+int UNICODE_MAIN(int argc, char **argv)
+#else
 int main(int argc, char **argv)
+#endif
 {
   std::string help_info = R"info(VDSInfo - A tool for extracting info from a VDS
 

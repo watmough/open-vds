@@ -34,6 +34,10 @@
 #include <PrintHelpers.h>
 #include <HelpConnection.h>
 
+#ifdef _WIN32
+#include <WindowsUnicodeMain.h>
+#endif
+
 #include "SEGYUtils/VDSSEGYInfo.h"
 
 #ifndef WIN32
@@ -191,8 +195,12 @@ copySamplesToSEGY(SEGY::Endianness endianess, SEGY::BinaryHeader::DataSampleForm
   }
 }
 
+#ifdef UNICODE_MAIN
+int UNICODE_MAIN(int argc, char **argv)
+#else
 int
 main(int argc, char *argv[])
+#endif
 {
 #ifndef WIN32
   signal(SIGPIPE, SIG_IGN);
