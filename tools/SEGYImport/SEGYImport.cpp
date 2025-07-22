@@ -54,6 +54,10 @@
 #include <PrintHelpers.h>
 #include <HelpConnection.h>
 
+#ifdef _WIN32
+#include <WindowsUnicodeMain.h>
+#endif
+
 #include <chrono>
 #include <numeric>
 #include <set>
@@ -2927,8 +2931,12 @@ std::string GetLegalTag(const std::vector<DataProvider>& dataProviders) {
   return "";
 }
 
+#ifdef UNICODE_MAIN
+int UNICODE_MAIN(int argc, char **argv)
+#else
 int
 main(int argc, char* argv[])
+#endif
 {
 #ifndef WIN32
   signal(SIGPIPE, SIG_IGN);

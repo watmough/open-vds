@@ -26,6 +26,10 @@
 
 #include <HelpConnection.h>
 
+#ifdef _WIN32
+#include <WindowsUnicodeMain.h>
+#endif
+
 #include <assert.h>
 
 #ifndef WIN32
@@ -167,7 +171,11 @@ static void printError(OpenVDS::OutputPrinter &outputPrinter, const OpenVDS::Err
   outputPrinter.printError("Failed to copy chunk ", message);
 }
 
+#ifdef UNICODE_MAIN
+int UNICODE_MAIN(int argc, char **argv)
+#else
 int main(int argc, char **argv)
+#endif
 {
 #ifndef WIN32
   signal(SIGPIPE, SIG_IGN);
