@@ -1,4 +1,5 @@
-FROM quay.io/pypa/manylinux2014_x86_64
+# Use the last manylinux2014 image with Python 3.6 & 3.7 support
+FROM quay.io/pypa/manylinux2014_x86_64:2025.05.03-1
 
 RUN curl -sSL  -o ninja.zip "https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-linux.zip"
 RUN unzip ninja.zip && mv ninja /usr/local/bin/ && rm -vf ninja* && ln -s /usr/local/bin/ninja /usr/local/bin/ninja-build

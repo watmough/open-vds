@@ -1,4 +1,5 @@
-FROM quay.io/pypa/manylinux_2_28_x86_64
+# Use the last manylinux_2_28 image with Python 3.6 & 3.7 support
+FROM quay.io/pypa/manylinux_2_28_x86_64:2025.05.03-1
 
 RUN dnf -y upgrade
 RUN dnf -y install dnf-plugins-core epel-release
