@@ -1706,6 +1706,25 @@ BinInfoPrimaryKeyValue(PrimaryKeyValue primaryKey, const SEGYBinInfo& binInfo)
 }
 
 int
+PrimaryKeyDimension(const SEGYFileInfo& fileInfo, PrimaryKeyValue primaryKey)
+{
+  if (fileInfo.Is4D() || fileInfo.m_segyType == SEGY::SEGYType::Prestack2D)
+  {
+    // Prestack2D doesn't really have a primary key dimension, but we'll use the same one as for Prestack as sort of a placeholder.
+    if (primaryKey == PrimaryKeyValue::CrosslineNumber)
+    {
+      return 2;
+    }
+    return 3;
+  }
+  if (primaryKey == PrimaryKeyValue::CrosslineNumber)
+  {
+    return 1;
+  }
+  return 2;
+}
+
+int
 BinInfoSecondaryKeyValue(PrimaryKeyValue primaryKey, const SEGYBinInfo& binInfo)
 {
   if (primaryKey == PrimaryKeyValue::CrosslineNumber)
@@ -2205,6 +2224,97 @@ parseSEGYFileInfoFile(const DataProvider& dataProvider, SEGYFileInfo& fileInfo, 
   }
 
   return true;
+}
+
+std::pair<int, int> getSegmentStartStopIndex(SEGYSegmentInfo const &segmentInfo, OpenVDS::VolumeDataAxisDescriptor const &primaryAxis, PrimaryKeyValue primaryKey)
+{
+  int secondaryStart = BinInfoSecondaryKeyValue(primaryKey, segmentInfo.m_binInfoStart);
+  int secondaryStop  = BinInfoSecondaryKeyValue(primaryKey, segmentInfo.m_binInfoStop);
+  int startIndex = primaryAxis.CoordinateToSampleIndex(secondaryStart);
+  int stopIndex  = primaryAxis.CoordinateToSampleIndex(secondaryStop);
+  return startIndex < stopIndex ? std::make_pair(startIndex, stopIndex) : std::make_pair(stopIndex, startIndex);
+}
+
+std::pair<int, int> combineStartStopIndices(std::pair<int, int> const &a, std::pair<int, int> const &b)
+{
+  return std::make_pair(std::min(a.first, b.first), std::max(a.second, b.second));
+}
+
+// Enhanced blank trace analysis that considers the spatial distribution of segments
+// This is particularly important for rotated surveys where simple area calculation fails
+// Returns the number of active traces (traces within the effective survey boundary)
+int64_t calculateActiveTraceCount(const SEGYFileInfo& fileInfo, const std::vector<OpenVDS::VolumeDataAxisDescriptor>& axisDescriptors, PrimaryKeyValue primaryKey)
+{
+  if (fileInfo.Is2D() || fileInfo.IsUnbinned())
+  {
+    // For 2D and unbinned data, return the full VDS trace count
+    int64_t traceCountInVDS = 1;
+    for(int axis = 1; axis < (int)axisDescriptors.size(); axis++)
+    {
+      traceCountInVDS *= axisDescriptors[axis].GetNumSamples();
+    }
+    return traceCountInVDS;
+  }
+
+  const auto& primaryAxis = axisDescriptors[PrimaryKeyDimension(fileInfo, primaryKey)];
+  bool isPrimaryIncreasing = (primaryAxis.GetCoordinateMin() <= primaryAxis.GetCoordinateMax());
+
+  std::vector<SEGYSegmentInfo>
+    sortedSegmentInfo;
+
+  // Merge segment info and create an ordered vector
+  for (const auto& segmentInfoList : fileInfo.m_segmentInfoLists)
+  {
+    sortedSegmentInfo.insert(sortedSegmentInfo.end(), segmentInfoList.begin(), segmentInfoList.end());
+  }
+  if(isPrimaryIncreasing)
+  {
+    std::sort(sortedSegmentInfo.begin(), sortedSegmentInfo.end(), [](SEGYSegmentInfo &a, SEGYSegmentInfo &b) -> bool { return a.m_primaryKey < b.m_primaryKey; });
+  }
+  else
+  { 
+    std::sort(sortedSegmentInfo.begin(), sortedSegmentInfo.end(), [](SEGYSegmentInfo &a, SEGYSegmentInfo &b) -> bool { return a.m_primaryKey > b.m_primaryKey; });
+  }
+
+  std::vector<std::pair<int, int>> secondaryStartStop;
+  secondaryStartStop.resize(primaryAxis.GetNumSamples());
+  std::pair<int, int> currentStartStopIndices;
+  int64_t activeTraces = 0;
+
+  // Scan forward
+  {
+    auto segmentInfoIterator = sortedSegmentInfo.begin();
+    currentStartStopIndices = getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey);
+    for(int primaryIndex = 0; primaryIndex < primaryAxis.GetNumSamples(); primaryIndex++)
+    {
+      while(primaryAxis.CoordinateToSampleIndex(segmentInfoIterator->m_primaryKey) == primaryIndex)
+      {
+        currentStartStopIndices = combineStartStopIndices(currentStartStopIndices, getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey));
+        segmentInfoIterator = std::next(segmentInfoIterator);
+      }
+      secondaryStartStop[primaryIndex] = currentStartStopIndices;
+    }
+  }
+
+  // Scan backward
+  {
+    auto segmentInfoIterator = std::prev(sortedSegmentInfo.end());
+    auto currentStartStopIndices = getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey);
+    for(int primaryIndex = primaryAxis.GetNumSamples() - 1; primaryIndex >= 0; primaryIndex--)
+    {
+      while(primaryAxis.CoordinateToSampleIndex(segmentInfoIterator->m_primaryKey) == primaryIndex)
+      {
+        currentStartStopIndices = combineStartStopIndices(currentStartStopIndices, getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey));
+        segmentInfoIterator = std::prev(segmentInfoIterator);
+      }
+      int activeStart = std::max(secondaryStartStop[primaryIndex].first,  currentStartStopIndices.first);
+      int activeStop  = std::min(secondaryStartStop[primaryIndex].second, currentStartStopIndices.second);
+      assert(activeStart <= activeStop);
+      activeTraces += activeStop - activeStart + 1;
+    }
+  }
+
+  return activeTraces;
 }
 
 std::vector<OpenVDS::VolumeDataAxisDescriptor>
@@ -2707,25 +2817,6 @@ SecondaryKeyDimension(const SEGYFileInfo& fileInfo, PrimaryKeyValue primaryKey)
     return 2;
   }
   return 1;
-}
-
-int
-PrimaryKeyDimension(const SEGYFileInfo& fileInfo, PrimaryKeyValue primaryKey)
-{
-  if (fileInfo.Is4D() || fileInfo.m_segyType == SEGY::SEGYType::Prestack2D)
-  {
-    // Prestack2D doesn't really have a primary key dimension, but we'll use the same one as for Prestack as sort of a placeholder.
-    if (primaryKey == PrimaryKeyValue::CrosslineNumber)
-    {
-      return 2;
-    }
-    return 3;
-  }
-  if (primaryKey == PrimaryKeyValue::CrosslineNumber)
-  {
-    return 1;
-  }
-  return 2;
 }
 
 int
@@ -3976,22 +4067,14 @@ main(int argc, char* argv[])
   // Create axis descriptors
   std::vector<OpenVDS::VolumeDataAxisDescriptor> axisDescriptors = createAxisDescriptors(fileInfo, sampleUnits, fold, primaryStep, secondaryStep, keepOriginalOrder, is2DCDPAxis, traceInfo2DManager->Count());
 
-  // Check for excess of empty traces
+  // Check for excess of empty traces (using segment-based analysis for binned data)
+  int64_t activeTraceCount = calculateActiveTraceCount(fileInfo, axisDescriptors, primaryKeyValue);
+  int64_t actualTraceCount = std::accumulate(fileInfo.m_traceCounts.begin(), fileInfo.m_traceCounts.end(), static_cast<int64_t>(0));
 
-  int64_t
-    traceCountInVDS = 1;
-
-  for(int axis = 1; axis < (int)axisDescriptors.size(); axis++)
+  if(activeTraceCount >= actualTraceCount * 2 && !ignoreWarnings)
   {
-    traceCountInVDS *= axisDescriptors[axis].GetNumSamples();
-  }
-
-  const auto
-    totalTraceCount = std::accumulate(fileInfo.m_traceCounts.begin(), fileInfo.m_traceCounts.end(), static_cast<int64_t>(0));
-
-  if(traceCountInVDS >= totalTraceCount * 2 && !ignoreWarnings)
-  {
-    std::string msg = fmt::format("There is more than {:.1f}% empty traces in the VDS, this usually indicates using the wrong header format or primary key for the input dataset.\nUse --ignore-warnings to force the import to go ahead.", double(traceCountInVDS - totalTraceCount) * 100.0 / double(traceCountInVDS));
+    double blankPercentage = double(activeTraceCount - actualTraceCount) * 100.0 / double(activeTraceCount);
+    std::string msg = fmt::format("There is more than {:.1f}% empty traces in the effective survey area, this usually indicates using the wrong header format or primary key for the input dataset.\nUse --ignore-warnings to force the import to go ahead.", blankPercentage);
     outputPrinter.printError("SEGY", msg);
     return EXIT_FAILURE;
   }
