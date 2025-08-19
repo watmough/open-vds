@@ -2230,8 +2230,8 @@ std::pair<int, int> getSegmentStartStopIndex(SEGYSegmentInfo const &segmentInfo,
 {
   int secondaryStart = BinInfoSecondaryKeyValue(primaryKey, segmentInfo.m_binInfoStart);
   int secondaryStop  = BinInfoSecondaryKeyValue(primaryKey, segmentInfo.m_binInfoStop);
-  int startIndex = primaryAxis.CoordinateToSampleIndex(secondaryStart);
-  int stopIndex  = primaryAxis.CoordinateToSampleIndex(secondaryStop);
+  int startIndex = primaryAxis.CoordinateToSampleIndex(float(secondaryStart));
+  int stopIndex  = primaryAxis.CoordinateToSampleIndex(float(secondaryStop));
   return startIndex < stopIndex ? std::make_pair(startIndex, stopIndex) : std::make_pair(stopIndex, startIndex);
 }
 
@@ -2287,7 +2287,7 @@ int64_t calculateActiveTraceCount(const SEGYFileInfo& fileInfo, const std::vecto
     currentStartStopIndices = getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey);
     for(int primaryIndex = 0; primaryIndex < primaryAxis.GetNumSamples(); primaryIndex++)
     {
-      while(primaryAxis.CoordinateToSampleIndex(segmentInfoIterator->m_primaryKey) == primaryIndex)
+      while(primaryAxis.CoordinateToSampleIndex(float(segmentInfoIterator->m_primaryKey)) == primaryIndex)
       {
         currentStartStopIndices = combineStartStopIndices(currentStartStopIndices, getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey));
         segmentInfoIterator = std::next(segmentInfoIterator);
@@ -2302,7 +2302,7 @@ int64_t calculateActiveTraceCount(const SEGYFileInfo& fileInfo, const std::vecto
     auto currentStartStopIndices = getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey);
     for(int primaryIndex = primaryAxis.GetNumSamples() - 1; primaryIndex >= 0; primaryIndex--)
     {
-      while(primaryAxis.CoordinateToSampleIndex(segmentInfoIterator->m_primaryKey) == primaryIndex)
+      while(primaryAxis.CoordinateToSampleIndex(float(segmentInfoIterator->m_primaryKey)) == primaryIndex)
       {
         currentStartStopIndices = combineStartStopIndices(currentStartStopIndices, getSegmentStartStopIndex(*segmentInfoIterator, primaryAxis, primaryKey));
         segmentInfoIterator = std::prev(segmentInfoIterator);
