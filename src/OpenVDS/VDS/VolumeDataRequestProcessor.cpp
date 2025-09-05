@@ -357,10 +357,8 @@ int64_t VolumeDataRequestProcessor::RequestRemap(VolumeDataPageImpl& targetPage,
 
     std::unique_lock<std::mutex> sharedDataLock(sharedData->m_mutex);
 
-    sharedData->m_volumeDataHash ^= hashCombiner.GetCombinedHash();
-
     // Check if all items are constant
-    if(sourceHash.IsConstant() && sharedData->m_chunksProcessed == 0)
+    if(sourceHash.IsConstant() && sharedData->m_volumeDataHash == VolumeDataHash::UNKNOWN)
     {
       sharedData->m_constantValueHash = uint64_t(sourceHash);
     }
@@ -368,7 +366,8 @@ int64_t VolumeDataRequestProcessor::RequestRemap(VolumeDataPageImpl& targetPage,
     {
       sharedData->m_constantValueHash = VolumeDataHash::UNKNOWN;
     }
-    
+
+    sharedData->m_volumeDataHash ^= hashCombiner.GetCombinedHash();
     sharedDataLock.unlock();
 
     int globalSourceSize[Dimensionality_Max];
