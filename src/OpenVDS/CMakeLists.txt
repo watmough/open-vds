@@ -53,6 +53,7 @@ else()
     IO/IOManagerDmsFactory.cpp
     IO/IORefreshToken.cpp
     IO/IOManagerDmsProxy.cpp
+    IO/MsiTokenSource.cpp
     IO/DmsIoFactories/AzureDmsIoManagerFactory.cpp
     IO/DmsIoFactories/AwsDmsIoManagerFactory.cpp
     IO/DmsIoFactories/DmsIoManagerFactory.cpp
@@ -106,6 +107,7 @@ else()
     IO/SslVerifyPeerEnv.h
     IO/SDPath.h
     IO/ErrorRequest.h
+    IO/MsiTokenSource.h
     IO/IOManagerDmsProxy.h
     IO/DmsIoFactories/AzureDmsIoManagerFactory.h
     IO/DmsIoFactories/AwsDmsIoManagerFactory.h

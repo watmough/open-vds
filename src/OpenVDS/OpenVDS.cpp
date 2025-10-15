@@ -49,6 +49,8 @@
 #include <fmt/format.h>
 
 #include <OpenVDS/OpenVDSVersion.h>
+#include "VDS/Logging.h"
+#include "IO/MsiTokenSource.h"
 
 namespace OpenVDS
 {
@@ -407,8 +409,26 @@ static std::unique_ptr<OpenOptions> createDMSOpenOptions(const std::string & url
       openOptions->legalTag = connectionPair.second;
     if (connectionPair.first == "httpproxy" || connectionPair.first == "http_proxy")
       openOptions->httpProxy = connectionPair.second;
+    if (connectionPair.first == "msienable" || connectionPair.first == "msi_enable") {
+      Logger logger(static_cast<GlobalStateImpl*>(OpenVDS::GetGlobalState())->logInterface, LogLevel::Info);
+      logger.LogInfo("createDMSOpenOptions: MSI ENABLE : TRUE");
+      std::string msiToken = OpenVDS::FetchMsiTokenFromImds();
+      // Log whether we obtained an MSI token or not for diagnostics.
+      if (!msiToken.empty())
+      {
+        openOptions->sdToken = std::move(msiToken);
+        logger.LogInfo("createDMSOpenOptions: obtained MSI token and assigned to sdToken");
+      }
+      else
+      {
+        // Explicit MSI was requested but failed -> treat as error and abort open/options creation.
+        logger.LogError("createDMSOpenOptions: MSI token not available from IMDS");
+        error.code = -1;
+        error.string = "MSI token not available from IMDS (msienable=true)";
+        return nullptr;
+      }
+    }
   }
-
   return openOptions;
 }
 
