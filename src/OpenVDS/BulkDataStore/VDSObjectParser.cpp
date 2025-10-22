@@ -131,7 +131,7 @@ Json::Value TranslateVolumeDataLayoutDescriptor(Json::Value const & root)
   layoutDescriptorJson["brickSize"] = fmt::format("BrickSize_{}", brickSize);
   layoutDescriptorJson["negativeMargin"] = root["NegativeMargin"].asInt();
   layoutDescriptorJson["positiveMargin"] = root["PositiveMargin"].asInt();
-  layoutDescriptorJson["brickSize2DMultiplier"] = 4; // FIXME: Check if object type is VDSSpread and set to 1 in that case
+  layoutDescriptorJson["brickSize2DMultiplier"] = root.get("BrickSize2DMultiplier", 4).asInt(); // FIXME: Check if object type is VDSSpread and set to 1 in that case
   layoutDescriptorJson["lodLevels"] = (lodLevels == 0) ? std::string("LODLevels_None") : fmt::format("LODLevels_{}", lodLevels);
   layoutDescriptorJson["create2DLODs"] = TranslateBoolean(root, "Create2DLODs");
   layoutDescriptorJson["forceFullResolutionDimension"] = TranslateBoolean(root, "ForceFullResolutionDimension");
