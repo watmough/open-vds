@@ -230,3 +230,4 @@ AWS S3:
 OSDU/DELFI Seismic DMS:
 - `SD_SVC_URL`
 - `SD_SVC_API_KEY`
+- Azure Managed Identity authentication is supported via the `msienable=true` connection string parameter for Azure-hosted deployments

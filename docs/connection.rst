@@ -102,6 +102,14 @@ The ClientSecret is optional, as it is not needed when using, by eg, OAuth2 + PK
 The used refresh token will be updated If the response contains a refresh_token member.
 It is the access_token member of the return that will be used as the sdtoken until it expires.
 
+Alternatively, for Azure-hosted deployments (Azure VMs, Azure Container Instances, 
+AKS, etc.), you can use `MsiEnable` instead of providing an explicit SdToken or 
+using RefreshToken flow. When `MsiEnable` is set to true (or yes, on, 1), OpenVDS 
+will automatically fetch an access token from Azure's Instance Metadata Service 
+(IMDS) using Managed Identity. This only works when running on Azure infrastructure 
+with Managed Identity configured. Key values can use `snake_case` (msi_enable) or 
+`CamelCase` (MsiEnable).
+
 NOTE: Key values for `sd` can use `snake_case` instead of `CammelCase` to match the
 look and feel of the response from the token provider.
 
@@ -135,6 +143,9 @@ SD::
 
   url = "sd://tenent/subprojet/subfolder"
   connection = "sdauthorityurl=https://some_osdu.instance.com/seistore-svc/api/v3;sdapikey=ABC;sdtoken=some_token"
+  
+  # Or using Azure Managed Identity (for Azure-hosted deployments):
+  connection = "sdauthorityurl=https://some_osdu.instance.com/seistore-svc/api/v3;sdapikey=ABC;msienable=true"
 
 AzureSAS::
 
