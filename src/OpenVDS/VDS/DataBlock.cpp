@@ -706,7 +706,19 @@ GenerateLODExcludingNoValue(void *targetBuffer, const void * sourceBuffer, int t
   int YFactor = fullResolutionDimension == 1 ? 1 : 2;
   int ZFactor = fullResolutionDimension == 2 ? 1 : 2;
 
-  if(READNEXTZ && !lastValidZ)
+  if (READNEXTZ && ZFactor == 1)
+  {
+    GenerateLODExcludingNoValue<READNEXTX, READNEXTY, false>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ , noValue, fullResolutionDimension, format, lastValidX, lastValidY, lastValidZ, elementSize);
+  }
+  else if (READNEXTY && YFactor == 1)
+  {
+    GenerateLODExcludingNoValue<READNEXTX, false, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ , noValue, fullResolutionDimension, format, lastValidX, lastValidY, lastValidZ, elementSize);
+  }
+  else if (READNEXTX && XFactor == 1)
+  {
+    GenerateLODExcludingNoValue<false, READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ , noValue, fullResolutionDimension, format, lastValidX, lastValidY, lastValidZ, elementSize);
+  }
+  else if(READNEXTZ && !lastValidZ)
   {
     GenerateLODExcludingNoValue<READNEXTX, READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ - 1, noValue, fullResolutionDimension, format, lastValidX, lastValidY, true, elementSize);
     GenerateLODExcludingNoValue<READNEXTX, READNEXTY, false>((uint8_t *)targetBuffer + targetModuloZ * (sizeZ - 1) * elementSize, (uint8_t *)sourceBuffer + sourceModuloZ * (sizeZ - 1) * elementSize * ZFactor, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, 1, noValue, fullResolutionDimension, format, lastValidX, lastValidY, true, elementSize);
@@ -727,7 +739,7 @@ GenerateLODExcludingNoValue(void *targetBuffer, const void * sourceBuffer, int t
   }
 }
 
-template<bool READNEXTY, bool READNEXTZ>
+template<bool READNEXTX, bool READNEXTY, bool READNEXTZ>
 static void
 GenerateLOD1Bit(uint8_t *targetBuffer, const uint8_t * sourceBuffer, int targetModuloY, int targetModuloZ, int sourceModuloY, int sourceModuloZ, int sizeX, int sizeY, int sizeZ, int targetOffsetX, int sourceOffsetX, int fullResolutionDimension)
 {
@@ -761,11 +773,15 @@ GenerateLOD1Bit(uint8_t *targetBuffer, const uint8_t * sourceBuffer, int targetM
         target[iDstX] &= ~bDstBit;
 
         bool
-          isSet = (source[iSrcX0] & bSrcBit0) || (source[iSrcX1] & bSrcBit1);
-        
-        if(READNEXTY              && !isSet) isSet = (source[iSrcX0 + sourceModuloY                ] & bSrcBit0) || (source[iSrcX1 + sourceModuloY                ] & bSrcBit1);
-        if(READNEXTZ              && !isSet) isSet = (source[iSrcX0                 + sourceModuloZ] & bSrcBit0) || (source[iSrcX1                 + sourceModuloZ] & bSrcBit1);
-        if(READNEXTZ && READNEXTY && !isSet) isSet = (source[iSrcX0 + sourceModuloY + sourceModuloZ] & bSrcBit0) || (source[iSrcX1 + sourceModuloY + sourceModuloZ] & bSrcBit1);
+          isSet = (source[iSrcX0] & bSrcBit0);
+
+        if (                          READNEXTX && !isSet) isSet = (source[iSrcX1                                ] & bSrcBit1) != 0;
+        if (             READNEXTY              && !isSet) isSet = (source[iSrcX0 + sourceModuloY                ] & bSrcBit0) != 0;
+        if (             READNEXTY && READNEXTX && !isSet) isSet = (source[iSrcX1 + sourceModuloY                ] & bSrcBit1) != 0;
+        if (READNEXTZ                           && !isSet) isSet = (source[iSrcX0                 + sourceModuloZ] & bSrcBit0) != 0;
+        if (READNEXTZ              && READNEXTX && !isSet) isSet = (source[iSrcX1                 + sourceModuloZ] & bSrcBit1) != 0;
+        if (READNEXTZ && READNEXTY              && !isSet) isSet = (source[iSrcX0 + sourceModuloY + sourceModuloZ] & bSrcBit0) != 0;
+        if (READNEXTZ && READNEXTY && READNEXTX && !isSet) isSet = (source[iSrcX1 + sourceModuloY + sourceModuloZ] & bSrcBit1) != 0;
 
         if (isSet)
         {
@@ -776,26 +792,39 @@ GenerateLOD1Bit(uint8_t *targetBuffer, const uint8_t * sourceBuffer, int targetM
   }
 }
 
-template<bool READNEXTY, bool READNEXTZ>
+template<bool READNEXTX, bool READNEXTY, bool READNEXTZ>
 static void
 GenerateLOD1Bit(uint8_t *targetBuffer, const uint8_t * sourceBuffer, int targetModuloY, int targetModuloZ, int sourceModuloY, int sourceModuloZ, int sizeX, int sizeY, int sizeZ, int targetOffsetX, int sourceOffsetX, int fullResolutionDimension, bool lastValidY, bool lastValidZ)
 {
+  int XFactor = fullResolutionDimension == 0 ? 1 : 2;
   int YFactor = fullResolutionDimension == 1 ? 1 : 2;
   int ZFactor = fullResolutionDimension == 2 ? 1 : 2;
 
-  if(READNEXTZ && !lastValidZ)
+  if (READNEXTZ && ZFactor == 1)
   {
-    GenerateLOD1Bit<READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ - 1, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, true);
-    GenerateLOD1Bit<READNEXTY, false>((uint8_t *)targetBuffer + targetModuloZ * (sizeZ - 1), (uint8_t *)sourceBuffer + sourceModuloZ * (sizeZ - 1) * ZFactor, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, 1, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, true);
+    GenerateLOD1Bit<READNEXTX, READNEXTY, false>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, lastValidZ);
+  }
+  else if (READNEXTY && YFactor == 1)
+  {
+    GenerateLOD1Bit<READNEXTX, false, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, lastValidZ);
+  }
+  else if (READNEXTX && XFactor == 1)
+  {
+    GenerateLOD1Bit<false, READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, lastValidZ);
+  }
+  else if(READNEXTZ && !lastValidZ)
+  {
+    GenerateLOD1Bit<READNEXTX, READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ - 1, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, true);
+    GenerateLOD1Bit<READNEXTX, READNEXTY, false>((uint8_t *)targetBuffer + targetModuloZ * (sizeZ - 1), (uint8_t *)sourceBuffer + sourceModuloZ * (sizeZ - 1) * ZFactor, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, 1, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, true);
   }
   else if(READNEXTY && !lastValidY)
   {
-    GenerateLOD1Bit<READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY - 1, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, true, lastValidZ);
-    GenerateLOD1Bit<false, READNEXTZ>((uint8_t *)targetBuffer + targetModuloY * (sizeY - 1), (uint8_t *)sourceBuffer + sourceModuloY * (sizeY - 1) * YFactor, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, 1, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, true, lastValidZ);
+    GenerateLOD1Bit<READNEXTX, READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY - 1, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, true, lastValidZ);
+    GenerateLOD1Bit<READNEXTX, false, READNEXTZ>((uint8_t *)targetBuffer + targetModuloY * (sizeY - 1), (uint8_t *)sourceBuffer + sourceModuloY * (sizeY - 1) * YFactor, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, 1, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, true, lastValidZ);
   }
   else
   {
-    GenerateLOD1Bit<READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension);
+    GenerateLOD1Bit<READNEXTX, READNEXTY, READNEXTZ>(targetBuffer, sourceBuffer, targetModuloY, targetModuloZ, sourceModuloY, sourceModuloZ, sizeX, sizeY, sizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension);
   }
 }
 
@@ -835,14 +864,14 @@ void DownSampleAndCopyRegion(DataBlock const &targetDataBlock,
 
     if(sourceDataBlock.Dimensionality == 1)
     {
-      GenerateLOD1Bit<false, false>((uint8_t *)targetBuffer, (uint8_t *)sourceBuffer,
+      GenerateLOD1Bit<true, false, false>((uint8_t *)targetBuffer, (uint8_t *)sourceBuffer,
         targetAllocatedSizeX, targetAllocatedSizeX * targetAllocatedSizeY,
         sourceAllocatedSizeX, sourceAllocatedSizeX * sourceAllocatedSizeY,
         targetSizeX, targetSizeY, targetSizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, lastValidZ);
     }
     else if(sourceDataBlock.Dimensionality == 2)
     {
-      GenerateLOD1Bit<true, false>((uint8_t *)targetBuffer, (uint8_t *)sourceBuffer, 
+      GenerateLOD1Bit<true, true, false>((uint8_t *)targetBuffer, (uint8_t *)sourceBuffer, 
         targetAllocatedSizeX, targetAllocatedSizeX * targetAllocatedSizeY, 
         sourceAllocatedSizeX, sourceAllocatedSizeX * sourceAllocatedSizeY,
         targetSizeX, targetSizeY, targetSizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, lastValidZ);
@@ -850,7 +879,7 @@ void DownSampleAndCopyRegion(DataBlock const &targetDataBlock,
     else
     {
       assert(sourceDataBlock.Dimensionality == 3);
-      GenerateLOD1Bit<true, true>((uint8_t *)targetBuffer, (uint8_t *)sourceBuffer, 
+      GenerateLOD1Bit<true, true, true>((uint8_t *)targetBuffer, (uint8_t *)sourceBuffer, 
         targetAllocatedSizeX, targetAllocatedSizeX * targetAllocatedSizeY, 
         sourceAllocatedSizeX, sourceAllocatedSizeX * sourceAllocatedSizeY,
         targetSizeX, targetSizeY, targetSizeZ, targetOffsetX, sourceOffsetX, fullResolutionDimension, lastValidY, lastValidZ);
