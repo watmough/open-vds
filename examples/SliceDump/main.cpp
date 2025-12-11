@@ -95,7 +95,7 @@ int main(int argc, char **argv)
   {
     options.parse(argc, argv);
   }
-  catch(cxxopts::OptionParseException &e)
+  catch(cxxopts::exceptions::parsing &e)
   {
     fprintf(stderr, "%s\n", e.what());
     return EXIT_FAILURE;

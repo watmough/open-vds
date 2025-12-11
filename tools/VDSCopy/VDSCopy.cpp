@@ -255,7 +255,7 @@ https://osdu.pages.opengroup.org/platform/domain-data-mgmt-services/seismic/open
   {
     options.parse(argc, argv);
   }
-  catch(cxxopts::OptionParseException &e)
+  catch(cxxopts::exceptions::parsing &e)
   {
     outputPrinter.printError("Args", e.what());
     return EXIT_FAILURE;

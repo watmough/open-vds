@@ -3206,7 +3206,7 @@ main(int argc, char* argv[])
     overrideCreate2DLODs = result.count("create-2d-lods") != 0;
     overrideMargin = result.count("margin") != 0;
   }
-  catch (cxxopts::OptionParseException& e)
+  catch (cxxopts::exceptions::parsing& e)
   {
     outputPrinter.printError("Args", e.what());
     return EXIT_FAILURE;
