@@ -17,8 +17,6 @@
 
 #define _CRT_SECURE_NO_WARNINGS 1
 
-#include <cxxopts.hpp>
-
 #include <stdio.h>
 
 #include <OpenVDS/VolumeDataLayout.h>
@@ -28,6 +26,8 @@
 
 #include <array>
 #include <limits>
+
+#include <cxxopts.hpp>
 
 #include "GenerateVDS.h"
 
