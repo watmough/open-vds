@@ -14,5 +14,7 @@ RUN /opt/python/cp38-cp38/bin/python -m pip install -r /tmp/requirements-dev.txt
 RUN /opt/python/cp39-cp39/bin/python -m pip install -r /tmp/requirements-dev.txt
 RUN /opt/python/cp310-cp310/bin/python -m pip install -r /tmp/requirements-dev.txt
 RUN /opt/python/cp311-cp311/bin/python -m pip install -r /tmp/requirements-dev.txt
+RUN /opt/python/cp312-cp312/bin/python -m pip install -r /tmp/requirements-dev.txt
+RUN /opt/python/cp313-cp313/bin/python -m pip install -r /tmp/requirements-dev.txt
 
 ENV CMAKE_BUILD_PARALLEL_LEVEL=2
