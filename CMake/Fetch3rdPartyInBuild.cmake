@@ -117,7 +117,7 @@ function(Fetch3rdParty)
   Fetch3rdParty_File(jcommander java      1.72 jar   https://repo1.maven.org/maven2/com/beust/jcommander/1.72/jcommander-1.72.jar         MD5=9fde6bc0ba1032eceb7267fd1ad1657b)
   Fetch3rdParty_FileTarget(google_nlohmann nlohmann json.hpp 3.9.1  https://raw.githubusercontent.com/nlohmann/json/v3.9.1/single_include/nlohmann/json.hpp MD5=5eabadfb8cf8fe1bf0811535c65f027f)
   Fetch3rdParty_Package(cmakerc           e7ba9e     https://github.com/vector-of-bool/cmrc/archive/e7ba9e9417960b2a5cefc9e79e8af8b06bfde3d1.zip SHA256=75c1263bb37b8bae159bacb4da10fd2eb50b9c04118901218b6a817b9d0fa757)
-  Fetch3rdParty_Package(cxxopts           3.0.0      https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.0.0.tar.gz SHA256=36f41fa2a46b3c1466613b63f3fa73dc24d912bc90d667147f1e43215a8c6d00)
+  Fetch3rdParty_Package(cxxopts           3.3.1      https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.3.1.tar.gz SHA256=3bfc70542c521d4b55a46429d808178916a579b28d048bd8c727ee76c39e2072)
   Fetch3rdParty_Package(sse2neon          1.5.1      https://github.com/DLTcollab/sse2neon/archive/refs/tags/v1.5.1.tar.gz SHA256=4001e2dfb14fcf3831211581ed83bcc83cf6a3a69f638dcbaa899044a351bb2a)
   # we don't need it since we build azure-sdk-for-cpp with curl
   #  if(WIN32)
