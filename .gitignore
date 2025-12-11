@@ -28,9 +28,6 @@ cmake-build*
 /**/CMakeFiles
 binpackage
 pytest.ini
-/3rdparty/cxxopts-3.0.0
-/3rdparty/benchmark-1.6.1
-/3rdparty/sse2neon-1.5.1
 /**/ovdspy
 .venv*/
 py*env/

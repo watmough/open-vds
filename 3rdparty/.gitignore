@@ -24,3 +24,6 @@ libxml2*
 azure-sdk-for-cpp*
 libxml2*
 openssl*
+benchmark*
+sse2neon*
+cxxopts*
