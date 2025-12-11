@@ -369,8 +369,10 @@ Json::Value TranslateVolumeDataLayout(Json::Value const & root)
   return volumeDataLayoutJson;
 }
 
+#if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wfree-nonheap-object"
+#endif
 size_t GetVolumeDataLayoutJsonString(const Parser *parser, char *jsonStringBuffer, size_t bufferSize)
 {
   std::vector<uint8_t>
@@ -402,7 +404,9 @@ size_t GetVolumeDataLayoutJsonString(const Parser *parser, char *jsonStringBuffe
 
   return result.size();
 }
+#if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
 
 bool ParserState::getNextToken(const char ** buffer)
 {
