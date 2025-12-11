@@ -248,7 +248,7 @@ main(int argc, char *argv[])
   {
     options.parse(argc, argv);
   }
-  catch(cxxopts::OptionParseException &e)
+  catch(cxxopts::exceptions::parsing &e)
   {
     outputPrinter.printError("Args", e.what());
     return EXIT_FAILURE;

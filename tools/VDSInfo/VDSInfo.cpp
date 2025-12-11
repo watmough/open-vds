@@ -248,7 +248,7 @@ VDSInfo --metadata-name TextHeader -b -e -w 80 s3://bluware-jorgen-dev/volve
   {
     options.parse(argc, argv);
   }
-  catch(cxxopts::OptionParseException &e)
+  catch(cxxopts::exceptions::parsing &e)
   {
     printer.printError("Args", e.what());
     return EXIT_FAILURE;
