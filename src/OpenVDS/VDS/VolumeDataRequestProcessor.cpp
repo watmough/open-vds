@@ -1438,7 +1438,7 @@ void TraceVolume(VolumeDataPageImpl *page, const VolumeDataChunk &chunk, const s
 
       typename InterpolatedRealType<T>::type value = volumeSampler.Sample3D(pBuffer, pos);
 
-      traceBuffer[traceSize * volumeDataSamplePos.originalSample + overlap + offsetTarget] = (float)value;
+      traceBuffer[(int64_t)traceSize * volumeDataSamplePos.originalSample + overlap + offsetTarget] = (float)value;
     }
   }
 }
