@@ -98,6 +98,28 @@ IOManager* IOManager::CreateIOManager(const OpenOptions& options, IOManager::Acc
   return nullptr;
 }
 
+bool ParseJSONFromBuffer(const std::vector<unsigned char> &json, Json::Value &root, Error &error)
+{
+  try
+  {
+    Json::CharReaderBuilder rbuilder;
+    rbuilder["collectComments"] = false;
+
+    std::unique_ptr<Json::CharReader> reader(rbuilder.newCharReader());
+    const char *json_begin = reinterpret_cast<const char *>(json.data());
+    reader->parse(json_begin, json_begin + json.size(), &root, &error.string);
+
+    return true;
+  }
+  catch(Json::Exception &e)
+  {
+    error.code = -1;
+    error.string = e.what() + std::string(" : ") + error.string;
+  }
+
+  return false;
+}
+
 // This function is defined in OpenVDS.cpp, it might make more sense to move it here
 OpenOptions* CreateOpenOptions(StringWrapper urlWrapper, StringWrapper connectionStringWrapper, Error& error);
 
