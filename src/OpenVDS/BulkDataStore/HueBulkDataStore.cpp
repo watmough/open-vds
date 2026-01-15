@@ -170,6 +170,9 @@ public:
 
   bool Open(const char *fileName);
   bool CreateNew(const char *fileName, bool overwriteExisting);
+#ifdef _WIN32
+  bool OpenFromIStream(::IStream* pStream);
+#endif
   void Close();
 
   DataStoreBuffer *
@@ -1487,6 +1490,29 @@ HueBulkDataStoreImpl::CreateNew(const char *fileName, bool overwriteExisting)
   return true;
 }
 
+#ifdef _WIN32
+bool
+HueBulkDataStoreImpl::OpenFromIStream(::IStream* pStream)
+{
+  assert(!m_fileHandle.IsOpen() && "Already open");
+
+  Error error;
+  if (!m_fileHandle.OpenFromIStream(pStream, error))
+  {
+    SetErrorMessage("OpenFromIStream error: " + error.string);
+    return false;
+  }
+
+  if (!ReadHeaderAndFileTable())
+  {
+    Close();
+    return false;
+  }
+
+  return true;
+}
+#endif
+
 void
 HueBulkDataStoreImpl::Close()
 {
@@ -1527,6 +1553,22 @@ HueBulkDataStore::CreateNew(const char *fileName, bool overwriteExisting)
 
   return dataStore;
 }
+
+#ifdef _WIN32
+HueBulkDataStore *
+HueBulkDataStore::OpenFromIStream(::IStream* pStream)
+{
+  HueBulkDataStoreImpl *dataStore = new HueBulkDataStoreImpl();
+
+  if (!dataStore->OpenFromIStream(pStream))
+  {
+    delete dataStore;
+    return nullptr;
+  }
+
+  return dataStore;
+}
+#endif
 
 void
 HueBulkDataStore::Close(HueBulkDataStore *hueBulkDataStore)

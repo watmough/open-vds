@@ -25,6 +25,10 @@
 #include <OpenVDS/openvds_export.h>
 #include <OpenVDS/Error.h>
 
+#ifdef _WIN32
+struct IStream;  // Forward declaration for Windows COM IStream
+#endif
+
 namespace OpenVDS
 {
 
@@ -95,6 +99,9 @@ public:
 
   OPENVDS_EXPORT static bool Exists(const std::string& filename);
   OPENVDS_EXPORT bool Open(const std::string& filename, bool isCreate, bool isDestroyExisting, bool isWriteAccess, Error& error);
+#ifdef _WIN32
+  OPENVDS_EXPORT bool OpenFromIStream(::IStream* pStream, Error& error);
+#endif
   OPENVDS_EXPORT void Close();
   OPENVDS_EXPORT bool EnableWriting(Error& error);
 
@@ -117,6 +124,9 @@ private:
   void* _pxPlatformHandleReadWrite;
   std::string _cFileName;
   FileView::SystemFileMappingObject * m_pFileMappingObject;
+#ifdef _WIN32
+  ::IStream* _pIStream;  // Borrowed IStream pointer (Windows only, for IStream-based access)
+#endif
 };
 
 } // namespace core

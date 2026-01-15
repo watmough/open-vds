@@ -12,9 +12,10 @@
 #include <cstdlib>
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN		
+#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <objidl.h>  // For IStream interface
 #define fseeko _fseeki64
 #define ftello _ftelli64
 #else
@@ -121,6 +122,9 @@ public:
 
   static HueBulkDataStore *Open(const char *fileName);
   static HueBulkDataStore *CreateNew(const char *fileName, bool overwriteExisting);
+#ifdef _WIN32
+  static HueBulkDataStore *OpenFromIStream(::IStream* pStream);
+#endif
   static void              Close(HueBulkDataStore *hueBulkDataStore);
 
   static void     ReleaseBuffer(Buffer *buffer);

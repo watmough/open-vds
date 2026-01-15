@@ -27,6 +27,10 @@
 
 #include <mutex>
 
+#ifdef _WIN32
+struct IStream;  // Forward declaration for Windows COM IStream
+#endif
+
 namespace OpenVDS
 {
 
@@ -86,6 +90,9 @@ public:
                 IsChannelZipped() const override;
 
   VolumeDataStoreVDSFile(VDS &vds, const std::string &fileName, Mode mode, Error &error);
+#ifdef _WIN32
+  VolumeDataStoreVDSFile(VDS &vds, ::IStream* pStream, Error &error);
+#endif
  ~VolumeDataStoreVDSFile();
 };
 
