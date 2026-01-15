@@ -1,0 +1,50 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+; OpenVDS Shell Extension Registration
+; ============================================================================
+; IMPORTANT: Replace "C:\\Path\\To\\VdsShellExtension.dll" with the actual path
+;            to your built VdsShellExtension.dll file
+; ============================================================================
+
+; === File Association ===
+[HKEY_CLASSES_ROOT\.vds]
+@="OpenVDS.Document"
+
+[HKEY_CLASSES_ROOT\OpenVDS.Document]
+@="OpenVDS Volume Data"
+
+; === Thumbnail Handler ===
+; CLSID: {8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}
+[HKEY_CLASSES_ROOT\CLSID\{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}]
+@="VDS Thumbnail Handler"
+
+[HKEY_CLASSES_ROOT\CLSID\{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}\InprocServer32]
+@="C:\\Path\\To\\VdsShellExtension.dll"
+"ThreadingModel"="Apartment"
+
+; Register thumbnail handler for .vds files
+[HKEY_CLASSES_ROOT\.vds\ShellEx\{e357fccd-a995-4576-b01f-234630154e96}]
+@="{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}"
+
+; === Preview Handler ===
+; CLSID: {9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}
+[HKEY_CLASSES_ROOT\CLSID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}]
+@="VDS Preview Handler"
+"AppID"="{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"
+
+[HKEY_CLASSES_ROOT\CLSID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}\InprocServer32]
+@="C:\\Path\\To\\VdsShellExtension.dll"
+"ThreadingModel"="Apartment"
+
+; AppID for surrogate process isolation
+[HKEY_CLASSES_ROOT\AppID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}]
+"DllSurrogate"=""
+
+; Register in global preview handlers list
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers]
+"{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"="VDS Preview Handler"
+
+; Register preview handler for .vds files
+[HKEY_CLASSES_ROOT\.vds\ShellEx\{8895b1c6-b41f-4c1c-a562-0d564250836f}]
+@="{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"

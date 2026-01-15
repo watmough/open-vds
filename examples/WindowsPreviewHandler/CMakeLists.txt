@@ -1,0 +1,52 @@
+if(WIN32)
+  # VDS Shell Extension - Preview and Thumbnail Handlers
+  add_library(VdsShellExtension SHARED
+    VdsShellExtension.cpp
+    VdsRenderer.cpp
+    VdsRenderer.h
+    VdsShellExtension.def
+  )
+
+  target_link_libraries(VdsShellExtension
+    PRIVATE
+      openvds::openvds
+      shlwapi
+      propsys
+  )
+
+  set_target_properties(VdsShellExtension PROPERTIES
+    FOLDER examples
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "VdsShellExtension"
+  )
+
+  # Copy the DLL to a known location for registration
+  add_custom_command(TARGET VdsShellExtension POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:VdsShellExtension>
+      ${CMAKE_CURRENT_BINARY_DIR}/VdsShellExtension.dll
+    COMMENT "Copying VdsShellExtension.dll for registration"
+  )
+
+  # Generate registration script with correct path
+  set(DLL_PATH "$<TARGET_FILE:VdsShellExtension>")
+  string(REPLACE "/" "\\\\" DLL_PATH_ESCAPED "${DLL_PATH}")
+
+  add_custom_command(TARGET VdsShellExtension POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "DLL built at: ${DLL_PATH}"
+    COMMENT "VDS Shell Extension build complete"
+  )
+
+  setWarningFlagsForTarget(VdsShellExtension)
+  copyDllForTarget(VdsShellExtension)
+
+  # Install
+  install(TARGETS VdsShellExtension
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+  )
+
+else()
+  message(STATUS "VdsShellExtension is only available on Windows")
+endif()
