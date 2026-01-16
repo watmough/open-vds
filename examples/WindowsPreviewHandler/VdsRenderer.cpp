@@ -20,8 +20,43 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <sstream>
 #include <string>
+
+// Log file for debug output
+static const char* LOG_FILE_PATH = "c:\\temp\\openvds-thumbnails.log";
+
+// Append debug lines to log file
+static void LogToFile(const std::vector<std::wstring>& lines)
+{
+    std::ofstream logFile(LOG_FILE_PATH, std::ios::app);
+    if (!logFile.is_open())
+        return;
+
+    // Add timestamp
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char timestamp[64];
+    sprintf_s(timestamp, "[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
+              st.wYear, st.wMonth, st.wDay,
+              st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    logFile << timestamp << "---\n";
+
+    for (const auto& line : lines)
+    {
+        // Convert wide string to UTF-8
+        int len = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len > 0)
+        {
+            std::string utf8(len - 1, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+            logFile << utf8 << "\n";
+        }
+    }
+    logFile << "\n";
+    logFile.flush();
+}
 
 // Performance thresholds based on benchmark data:
 // - 90% of renders complete in under 50ms
@@ -35,8 +70,9 @@ static constexpr int MIN_LOD_DIMENSION = 128;  // Don't use LOD that would give 
 static constexpr bool ENABLE_LOD_OPTIMIZATION = false;
 
 // Data validation thresholds
-static constexpr float MAX_INVALID_RATIO = 0.5f;    // Max 50% NaN/Inf values
+static constexpr float MAX_INVALID_RATIO = 0.5f;    // Warn if more than 50% NaN/Inf values
 static constexpr float MIN_VALUE_VARIANCE = 1e-10f; // Minimum variance to be considered valid data
+static constexpr float MAX_VALID_MAGNITUDE = 1e30f; // Filter values with |v| > this magnitude
 
 // Create a debug bitmap with error/status text (black text on white background)
 static HBITMAP CreateDebugBitmap(int width, int height, const std::vector<std::wstring>& lines)
@@ -420,6 +456,12 @@ struct DataValidationResult
     std::wstring errorMessage;
 };
 
+// Helper to check if a value is valid for rendering (finite and reasonable magnitude)
+static inline bool IsValidRenderValue(float v)
+{
+    return std::isfinite(v) && std::fabs(v) <= MAX_VALID_MAGNITUDE;
+}
+
 static DataValidationResult ValidateSliceData(const float* data, size_t count)
 {
     DataValidationResult result = {};
@@ -427,12 +469,13 @@ static DataValidationResult ValidateSliceData(const float* data, size_t count)
 
     if (!data || count == 0)
     {
-        result.isValid = false;
-        result.errorMessage = L"No data returned";
+        result.isValid = true;  // Don't fail, just note it
+        result.errorMessage = L"Warning: No data returned";
         return result;
     }
 
     // First pass: count invalid values and find initial valid value
+    // Invalid = NaN, Inf, or magnitude > 1e30
     int invalidCount = 0;
     float firstValidValue = 0.0f;
     bool foundValid = false;
@@ -440,7 +483,7 @@ static DataValidationResult ValidateSliceData(const float* data, size_t count)
     for (size_t i = 0; i < count; i++)
     {
         float v = data[i];
-        if (std::isnan(v) || std::isinf(v))
+        if (!IsValidRenderValue(v))
         {
             invalidCount++;
         }
@@ -453,47 +496,51 @@ static DataValidationResult ValidateSliceData(const float* data, size_t count)
 
     result.invalidCount = invalidCount;
 
-    // Check if too many invalid values
+    // Check if too many invalid values (warning only, don't fail)
     float invalidRatio = static_cast<float>(invalidCount) / count;
     if (invalidRatio > MAX_INVALID_RATIO)
     {
-        result.isValid = false;
         wchar_t buf[128];
-        swprintf_s(buf, L"Too many invalid values: %.1f%%", invalidRatio * 100);
+        swprintf_s(buf, L"Warning: Many invalid/extreme values: %.1f%%", invalidRatio * 100);
         result.errorMessage = buf;
-        return result;
+        // Continue anyway - don't fail
     }
 
     if (!foundValid)
     {
-        result.isValid = false;
-        result.errorMessage = L"No valid data values found";
+        // No valid values - use defaults
+        result.minVal = 0.0f;
+        result.maxVal = 1.0f;
+        result.isValid = true;  // Don't fail, let rendering continue with defaults
+        if (result.errorMessage.empty())
+            result.errorMessage = L"Warning: No valid data values found, using defaults";
         return result;
     }
 
-    // Second pass: compute min/max
+    // Second pass: compute min/max (only from valid values)
     result.minVal = firstValidValue;
     result.maxVal = firstValidValue;
 
     for (size_t i = 0; i < count; i++)
     {
         float v = data[i];
-        if (std::isfinite(v))
+        if (IsValidRenderValue(v))
         {
             if (v < result.minVal) result.minVal = v;
             if (v > result.maxVal) result.maxVal = v;
         }
     }
 
-    // Check if data has any variance
+    // Check if data has any variance (warning only, don't fail)
     float range = result.maxVal - result.minVal;
     if (range < MIN_VALUE_VARIANCE)
     {
-        result.isValid = false;
+        // Low variance - just warn, don't fail validation
         wchar_t buf[128];
-        swprintf_s(buf, L"Data has no variance (all values ~%.2e)", result.minVal);
-        result.errorMessage = buf;
-        return result;
+        swprintf_s(buf, L"Warning: Data has low variance (all values ~%.2e)", result.minVal);
+        if (result.errorMessage.empty())
+            result.errorMessage = buf;
+        // Still mark as valid so rendering continues
     }
 
     result.isValid = true;
@@ -772,6 +819,7 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
             MultiByteToWideChar(CP_UTF8, 0, errMsg.c_str(), -1, wErrMsg, 256);
             dbg.push_back(wErrMsg);
 
+            LogToFile(dbg);
             return CreateDebugBitmap(256, 256, dbg);
         }
 
@@ -780,36 +828,22 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
 
         swprintf_s(buf, L"Data validation: %s", validation.isValid ? L"PASSED" : L"FAILED");
         dbg.push_back(buf);
-
-        if (!validation.isValid)
-        {
-            dbg.push_back(L"");
-            dbg.push_back(L"=== DATA VALIDATION FAILED ===");
-            dbg.push_back(validation.errorMessage.c_str());
-            swprintf_s(buf, L"Invalid values: %d/%d (%.1f%%)",
-                       validation.invalidCount, validation.totalCount,
-                       100.0f * validation.invalidCount / validation.totalCount);
-            dbg.push_back(buf);
-
-            // Output debug info for diagnostic purposes
-            OutputDebugStringW(L"VdsRenderer: Data validation failed for slice\n");
-            OutputDebugStringW(validation.errorMessage.c_str());
-            OutputDebugStringW(L"\n");
-
-            return CreateDebugBitmap(256, 256, dbg);
-        }
-
         swprintf_s(buf, L"Data range: [%.3e, %.3e]", validation.minVal, validation.maxVal);
         dbg.push_back(buf);
-        if (validation.invalidCount > 0)
+        swprintf_s(buf, L"Invalid values: %d/%d (%.1f%%)",
+                   validation.invalidCount, validation.totalCount,
+                   validation.totalCount > 0 ? 100.0f * validation.invalidCount / validation.totalCount : 0.0f);
+        dbg.push_back(buf);
+
+        if (!validation.errorMessage.empty())
         {
-            swprintf_s(buf, L"Invalid values: %d (%.1f%%)",
-                       validation.invalidCount,
-                       100.0f * validation.invalidCount / validation.totalCount);
-            dbg.push_back(buf);
+            dbg.push_back(validation.errorMessage.c_str());
         }
 
-        // Use validated min/max for normalization
+        // Log all debug info to file
+        LogToFile(dbg);
+
+        // Use validated min/max for normalization (even if validation had warnings)
         float minVal = validation.minVal;
         float maxVal = validation.maxVal;
 
@@ -833,7 +867,7 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
                 for (int x = 0; x < width; x++)   // x iterates over dim1
                 {
                     float v = buffer[x * dim0Size + y];  // buffer[dim1_idx * dim0Size + dim0_idx]
-                    if (!std::isfinite(v)) v = minVal;
+                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
                     float normalized = (v - minVal) / range;
                     normalized = std::max(0.0f, std::min(1.0f, normalized));
                     grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
@@ -848,7 +882,7 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
                 for (int x = 0; x < width; x++)   // x iterates over dim0
                 {
                     float v = buffer[y * dim0Size + x];  // buffer[dim1_idx * dim0Size + dim0_idx]
-                    if (!std::isfinite(v)) v = minVal;
+                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
                     float normalized = (v - minVal) / range;
                     normalized = std::max(0.0f, std::min(1.0f, normalized));
                     grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
@@ -866,12 +900,14 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
         wchar_t wMsg[256];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 256);
         dbg.push_back(wMsg);
+        LogToFile(dbg);
         return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, dbg);
     }
     catch (...)
     {
         dbg.push_back(L"=== EXCEPTION ===");
         dbg.push_back(L"Unknown exception");
+        LogToFile(dbg);
         return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, dbg);
     }
 }
@@ -1018,6 +1054,7 @@ HBITMAP VdsRenderer::Render2D(int maxSize)
                 dbg.push_back(buf);
             }
 
+            LogToFile(dbg);
             return CreateDebugBitmap(256, 256, dbg);
         }
         dbg.push_back(L"Request: OK");
@@ -1027,36 +1064,22 @@ HBITMAP VdsRenderer::Render2D(int maxSize)
 
         swprintf_s(buf, L"Data validation: %s", validation.isValid ? L"PASSED" : L"FAILED");
         dbg.push_back(buf);
-
-        if (!validation.isValid)
-        {
-            dbg.push_back(L"");
-            dbg.push_back(L"=== DATA VALIDATION FAILED ===");
-            dbg.push_back(validation.errorMessage.c_str());
-            swprintf_s(buf, L"Invalid values: %d/%d (%.1f%%)",
-                       validation.invalidCount, validation.totalCount,
-                       100.0f * validation.invalidCount / validation.totalCount);
-            dbg.push_back(buf);
-
-            // Output debug info for diagnostic purposes
-            OutputDebugStringW(L"VdsRenderer: Data validation failed for 2D render\n");
-            OutputDebugStringW(validation.errorMessage.c_str());
-            OutputDebugStringW(L"\n");
-
-            return CreateDebugBitmap(256, 256, dbg);
-        }
-
         swprintf_s(buf, L"Data range: [%.3e, %.3e]", validation.minVal, validation.maxVal);
         dbg.push_back(buf);
-        if (validation.invalidCount > 0)
+        swprintf_s(buf, L"Invalid values: %d/%d (%.1f%%)",
+                   validation.invalidCount, validation.totalCount,
+                   validation.totalCount > 0 ? 100.0f * validation.invalidCount / validation.totalCount : 0.0f);
+        dbg.push_back(buf);
+
+        if (!validation.errorMessage.empty())
         {
-            swprintf_s(buf, L"Invalid values: %d (%.1f%%)",
-                       validation.invalidCount,
-                       100.0f * validation.invalidCount / validation.totalCount);
-            dbg.push_back(buf);
+            dbg.push_back(validation.errorMessage.c_str());
         }
 
-        // Use validated min/max for normalization
+        // Log all debug info to file
+        LogToFile(dbg);
+
+        // Use validated min/max for normalization (even if validation had warnings)
         float minVal = validation.minVal;
         float maxVal = validation.maxVal;
 
@@ -1079,7 +1102,7 @@ HBITMAP VdsRenderer::Render2D(int maxSize)
                 for (int x = 0; x < width; x++)
                 {
                     float v = buffer[x * dim0Size + y];
-                    if (!std::isfinite(v)) v = minVal;
+                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
                     float normalized = (v - minVal) / range;
                     normalized = std::max(0.0f, std::min(1.0f, normalized));
                     grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
@@ -1093,7 +1116,7 @@ HBITMAP VdsRenderer::Render2D(int maxSize)
                 for (int x = 0; x < width; x++)
                 {
                     float v = buffer[y * dim0Size + x];
-                    if (!std::isfinite(v)) v = minVal;
+                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
                     float normalized = (v - minVal) / range;
                     normalized = std::max(0.0f, std::min(1.0f, normalized));
                     grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
@@ -1111,12 +1134,14 @@ HBITMAP VdsRenderer::Render2D(int maxSize)
         wchar_t wMsg[256];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 256);
         dbg.push_back(wMsg);
+        LogToFile(dbg);
         return CreateDebugBitmap(256, 256, dbg);
     }
     catch (...)
     {
         dbg.push_back(L"");
         dbg.push_back(L"UNKNOWN EXCEPTION");
+        LogToFile(dbg);
         return CreateDebugBitmap(256, 256, dbg);
     }
 }
