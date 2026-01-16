@@ -17,8 +17,72 @@
 
 #include "VdsRenderer.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <sstream>
+#include <string>
+
+// Create a debug bitmap with error/status text (black text on white background)
+static HBITMAP CreateDebugBitmap(int width, int height, const std::vector<std::wstring>& lines)
+{
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;  // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pBits = nullptr;
+    HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+    if (!hBitmap)
+    {
+        DeleteDC(hdcMem);
+        ReleaseDC(nullptr, hdcScreen);
+        return nullptr;
+    }
+
+    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
+
+    // Fill with white background
+    RECT rc = { 0, 0, width, height };
+    HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
+    FillRect(hdcMem, &rc, hBrush);
+    DeleteObject(hBrush);
+
+    // Black text
+    SetBkMode(hdcMem, TRANSPARENT);
+    SetTextColor(hdcMem, RGB(0, 0, 0));
+
+    HFONT hFont = CreateFontW(-11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    HFONT hOldFont = (HFONT)SelectObject(hdcMem, hFont);
+
+    int y = 6;
+    int lineHeight = 13;
+    for (const auto& line : lines)
+    {
+        if (line.empty())
+            continue;  // Skip blank lines
+        if (y + lineHeight > height - 6)
+            break;
+        RECT textRect = { 6, y, width - 6, y + lineHeight };
+        DrawTextW(hdcMem, line.c_str(), -1, &textRect, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += lineHeight;
+    }
+
+    SelectObject(hdcMem, hOldFont);
+    DeleteObject(hFont);
+    SelectObject(hdcMem, hOldBitmap);
+    DeleteDC(hdcMem);
+    ReleaseDC(nullptr, hdcScreen);
+
+    return hBitmap;
+}
 
 VdsRenderer::VdsRenderer()
     : m_vdsHandle(nullptr)
@@ -36,13 +100,31 @@ VdsRenderer::~VdsRenderer()
         m_vdsHandle = nullptr;
     }
     m_layout = nullptr;
-    m_stream = nullptr;
+    if (m_stream)
+    {
+        m_stream->Release();
+        m_stream = nullptr;
+    }
 }
 
 bool VdsRenderer::Initialize(IStream* pStream)
 {
     if (!pStream)
         return false;
+
+    // Clean up any previous state
+    if (m_vdsHandle)
+    {
+        OpenVDS::Error error;
+        OpenVDS::Close(m_vdsHandle, error);
+        m_vdsHandle = nullptr;
+    }
+    m_layout = nullptr;
+    if (m_stream)
+    {
+        m_stream->Release();
+        m_stream = nullptr;
+    }
 
     m_stream = pStream;
     m_stream->AddRef();
@@ -257,31 +339,157 @@ HBITMAP VdsRenderer::CreateColorizedBitmap(const uint8_t* grayscaleData,
     return hBitmap;
 }
 
+// Scale a bitmap to fit within maxSize while maintaining aspect ratio
+static HBITMAP ScaleBitmap(HBITMAP hSource, int maxSize)
+{
+    if (!hSource || maxSize <= 0)
+        return hSource;
+
+    BITMAP bm;
+    GetObject(hSource, sizeof(bm), &bm);
+
+    int srcWidth = bm.bmWidth;
+    int srcHeight = bm.bmHeight;
+
+    // If already smaller than maxSize, return as-is
+    if (srcWidth <= maxSize && srcHeight <= maxSize)
+        return hSource;
+
+    // Calculate scaled dimensions maintaining aspect ratio
+    float scale = std::min((float)maxSize / srcWidth, (float)maxSize / srcHeight);
+    int dstWidth = std::max(1, (int)(srcWidth * scale));
+    int dstHeight = std::max(1, (int)(srcHeight * scale));
+
+    // Create destination bitmap
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcSrc = CreateCompatibleDC(hdcScreen);
+    HDC hdcDst = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = dstWidth;
+    bmi.bmiHeader.biHeight = -dstHeight;  // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pBits = nullptr;
+    HBITMAP hDest = CreateDIBSection(hdcDst, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+
+    if (hDest)
+    {
+        HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, hSource);
+        HBITMAP hOldDst = (HBITMAP)SelectObject(hdcDst, hDest);
+
+        // Use high-quality scaling
+        SetStretchBltMode(hdcDst, HALFTONE);
+        SetBrushOrgEx(hdcDst, 0, 0, nullptr);
+        StretchBlt(hdcDst, 0, 0, dstWidth, dstHeight,
+                   hdcSrc, 0, 0, srcWidth, srcHeight, SRCCOPY);
+
+        SelectObject(hdcSrc, hOldSrc);
+        SelectObject(hdcDst, hOldDst);
+
+        // Delete source bitmap and return scaled version
+        DeleteObject(hSource);
+    }
+
+    DeleteDC(hdcSrc);
+    DeleteDC(hdcDst);
+    ReleaseDC(nullptr, hdcScreen);
+
+    // Return scaled bitmap, or original if scaling failed
+    return hDest ? hDest : hSource;
+}
+
 HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
 {
-    if (!m_vdsHandle || !m_layout)
-        return nullptr;
+    std::vector<std::wstring> dbg;  // Debug info for error bitmap
 
-    if (dimension < 0 || dimension >= m_layout->GetDimensionality())
-        return nullptr;
+    if (!m_vdsHandle || !m_layout)
+    {
+        dbg.push_back(L"VDS Error");
+        dbg.push_back(L"Handle or layout is null");
+        return CreateDebugBitmap(256, 256, dbg);
+    }
+
+    int dimensionality = m_layout->GetDimensionality();
+
+    // For 2D data, render the entire dataset (ignore dimension/sliceIndex)
+    if (dimensionality == 2)
+    {
+        return Render2D(maxSize);
+    }
+
+    // For 3D/4D data, validate dimension and slice index
+    if (dimension < 0 || dimension >= dimensionality)
+    {
+        dbg.push_back(L"VDS Error");
+        wchar_t buf[64];
+        swprintf_s(buf, L"Invalid dimension: %d", dimension);
+        dbg.push_back(buf);
+        return CreateDebugBitmap(256, 256, dbg);
+    }
 
     if (sliceIndex < 0 || sliceIndex >= GetSliceCount(dimension))
-        return nullptr;
+    {
+        dbg.push_back(L"VDS Error");
+        wchar_t buf[64];
+        swprintf_s(buf, L"Invalid slice: %d", sliceIndex);
+        dbg.push_back(buf);
+        return CreateDebugBitmap(256, 256, dbg);
+    }
+
+    // Add detailed debug info
+    wchar_t buf[128];
+    dbg.push_back(L"=== VDS Information ===");
+    swprintf_s(buf, L"Dimensionality: %d", dimensionality);
+    dbg.push_back(buf);
+    dbg.push_back(L"");
+    dbg.push_back(L"Dimensions:");
+    for (int d = 0; d < dimensionality; d++)
+    {
+        auto axis = m_layout->GetAxisDescriptor(d);
+        wchar_t name[64], unit[32];
+        MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, name, 64);
+        MultiByteToWideChar(CP_UTF8, 0, axis.GetUnit(), -1, unit, 32);
+        swprintf_s(buf, L"[%d] %s: %d [%.1f-%.1f] %s",
+                   d, name, m_layout->GetDimensionNumSamples(d),
+                   axis.GetCoordinateMin(), axis.GetCoordinateMax(), unit);
+        dbg.push_back(buf);
+    }
+    dbg.push_back(L"");
+    swprintf_s(buf, L"Channels: %d", m_layout->GetChannelCount());
+    dbg.push_back(buf);
+    for (int ch = 0; ch < m_layout->GetChannelCount(); ch++)
+    {
+        auto channel = m_layout->GetChannelDescriptor(ch);
+        wchar_t chName[64];
+        MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, chName, 64);
+        swprintf_s(buf, L"[%d] %s: [%.2e, %.2e]",
+                   ch, chName, channel.GetValueRangeMin(), channel.GetValueRangeMax());
+        dbg.push_back(buf);
+    }
+    dbg.push_back(L"");
 
     try
     {
         // Get access manager
         OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(m_vdsHandle);
 
-        // Determine slice dimensions
+        // Set up voxel bounds
         int voxelMin[OpenVDS::Dimensionality_Max] = { 0, 0, 0, 0, 0, 0 };
         int voxelMax[OpenVDS::Dimensionality_Max] = { 1, 1, 1, 1, 1, 1 };
 
-        int width = 0, height = 0;
-        for (int dim = 0; dim < m_layout->GetDimensionality(); dim++)
+        // Collect the dimensions that are NOT the slice dimension
+        int displayDims[OpenVDS::Dimensionality_Max - 1];
+        int displayDimCount = 0;
+
+        for (int dim = 0; dim < dimensionality; dim++)
         {
             if (dim == dimension)
             {
+                // This is the slice dimension - fix at sliceIndex
                 voxelMin[dim] = sliceIndex;
                 voxelMax[dim] = sliceIndex + 1;
             }
@@ -289,57 +497,407 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
             {
                 voxelMin[dim] = 0;
                 voxelMax[dim] = m_layout->GetDimensionNumSamples(dim);
-                if (width == 0)
-                    width = voxelMax[dim];
-                else if (height == 0)
-                    height = voxelMax[dim];
+                displayDims[displayDimCount++] = dim;
             }
         }
 
-        // For 2D data
-        if (m_layout->GetDimensionality() == 2)
+        // For 4D data, fix the third display dimension at midpoint
+        // We only display 2 dimensions at a time
+        if (displayDimCount > 2)
         {
-            if (dimension == 0)
+            int dim = displayDims[2];
+            int midpoint = m_layout->GetDimensionNumSamples(dim) / 2;
+            voxelMin[dim] = midpoint;
+            voxelMax[dim] = midpoint + 1;
+        }
+
+        // VDS dimension conventions:
+        // 3D poststack: dim0=Sample, dim1=Crossline, dim2=Inline
+        // 4D prestack:  dim0=Sample, dim1=Offset, dim2=Crossline, dim3=Inline
+        //
+        // For display:
+        // - If Sample (dim0) is one of the display dimensions, it should be Y (vertical)
+        // - The other dimension becomes X (horizontal)
+        // - If Sample is sliced (time/depth slice), lower dim = X, higher dim = Y
+
+        int dim0 = displayDims[0];  // First display dimension (lower index)
+        int dim1 = displayDims[1];  // Second display dimension (higher index)
+
+        int dim0Size = m_layout->GetDimensionNumSamples(dim0);
+        int dim1Size = m_layout->GetDimensionNumSamples(dim1);
+
+        // OpenVDS returns data with dim0 as fastest-varying
+        // buffer layout: buffer[dim1_idx * dim0Size + dim0_idx]
+
+        // Determine if we need to transpose for display
+        // If dim0 == 0 (Sample dimension), Sample should be Y-axis (vertical)
+        // This requires transposing: X = dim1, Y = dim0
+        bool needsTranspose = (dim0 == 0);
+
+        int width, height;
+        if (needsTranspose)
+        {
+            // Sample (dim0) is vertical (Y), other dim (dim1) is horizontal (X)
+            width = dim1Size;
+            height = dim0Size;
+        }
+        else
+        {
+            // Time/depth slice - dim0 is X, dim1 is Y
+            width = dim0Size;
+            height = dim1Size;
+        }
+
+        // Allocate buffer for VDS data
+        std::vector<float> buffer(dim0Size * dim1Size);
+
+        // Find an available dimension group
+        OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
+        const wchar_t* dimGroupName = L"Dimensions_012";
+        OpenVDS::DimensionsND candidates[] = {
+            OpenVDS::Dimensions_01,
+            OpenVDS::Dimensions_012,
+            OpenVDS::Dimensions_02
+        };
+        const wchar_t* candidateNames[] = {
+            L"Dimensions_01",
+            L"Dimensions_012",
+            L"Dimensions_02"
+        };
+
+        for (int i = 0; i < 3; i++)
+        {
+            auto status = accessManager.GetVDSProduceStatus(candidates[i], 0, 0);
+            if (status != OpenVDS::VDSProduceStatus::Unavailable)
             {
-                width = m_layout->GetDimensionNumSamples(1);
-                height = 1;
-            }
-            else
-            {
-                width = m_layout->GetDimensionNumSamples(0);
-                height = 1;
+                dimGroup = candidates[i];
+                dimGroupName = candidateNames[i];
+                break;
             }
         }
 
-        // Allocate buffer
-        std::vector<float> buffer(width * height);
+        swprintf_s(buf, L"DimGroup: %s", dimGroupName);
+        dbg.push_back(buf);
+        swprintf_s(buf, L"voxelMin: [%d,%d,%d,%d]",
+                   voxelMin[0], voxelMin[1], voxelMin[2], voxelMin[3]);
+        dbg.push_back(buf);
+        swprintf_s(buf, L"voxelMax: [%d,%d,%d,%d]",
+                   voxelMax[0], voxelMax[1], voxelMax[2], voxelMax[3]);
+        dbg.push_back(buf);
+        dbg.push_back(L"");
 
         // Request the slice
         auto request = accessManager.RequestVolumeSubset<float>(
             buffer.data(),
             buffer.size() * sizeof(float),
-            OpenVDS::Dimensions_012,
+            dimGroup,
             0, 0,
             voxelMin, voxelMax
         );
 
         if (!request->WaitForCompletion())
-            return nullptr;
+        {
+            dbg.push_back(L"=== ERROR ===");
+            swprintf_s(buf, L"Error code: %d", request->GetErrorCode());
+            dbg.push_back(buf);
 
-        // Get value range from channel
-        float minVal = m_layout->GetChannelValueRangeMin(0);
-        float maxVal = m_layout->GetChannelValueRangeMax(0);
+            std::string errMsg = request->GetErrorMessage();
+            wchar_t wErrMsg[256];
+            MultiByteToWideChar(CP_UTF8, 0, errMsg.c_str(), -1, wErrMsg, 256);
+            dbg.push_back(wErrMsg);
 
-        // Normalize to grayscale
+            return CreateDebugBitmap(256, 256, dbg);
+        }
+
+        // Compute actual min/max from the data for better normalization
+        float minVal = buffer[0];
+        float maxVal = buffer[0];
+        for (size_t i = 1; i < buffer.size(); i++)
+        {
+            float v = buffer[i];
+            if (std::isfinite(v))
+            {
+                if (v < minVal) minVal = v;
+                if (v > maxVal) maxVal = v;
+            }
+        }
+
+        // Fallback to channel metadata if data range is degenerate
+        if (maxVal - minVal < 1e-6f)
+        {
+            minVal = m_layout->GetChannelValueRangeMin(0);
+            maxVal = m_layout->GetChannelValueRangeMax(0);
+        }
+
+        // Create grayscale buffer with proper layout for bitmap
         std::vector<uint8_t> grayscale(width * height);
-        NormalizeToGrayscale(buffer.data(), grayscale.data(),
-                            width * height, minVal, maxVal);
+        float range = maxVal - minVal;
+        if (range < 1e-6f) range = 1.0f;
 
-        // Create colorized bitmap
-        return CreateColorizedBitmap(grayscale.data(), width, height);
+        if (needsTranspose)
+        {
+            // Transpose: bitmap(x,y) comes from buffer(y, x) where x is dim1, y is dim0
+            for (int y = 0; y < height; y++)      // y iterates over dim0 (Sample)
+            {
+                for (int x = 0; x < width; x++)   // x iterates over dim1
+                {
+                    float v = buffer[x * dim0Size + y];  // buffer[dim1_idx * dim0Size + dim0_idx]
+                    if (!std::isfinite(v)) v = minVal;
+                    float normalized = (v - minVal) / range;
+                    normalized = std::max(0.0f, std::min(1.0f, normalized));
+                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
+                }
+            }
+        }
+        else
+        {
+            // No transpose needed: bitmap(x,y) comes from buffer(y, x) directly
+            for (int y = 0; y < height; y++)      // y iterates over dim1
+            {
+                for (int x = 0; x < width; x++)   // x iterates over dim0
+                {
+                    float v = buffer[y * dim0Size + x];  // buffer[dim1_idx * dim0Size + dim0_idx]
+                    if (!std::isfinite(v)) v = minVal;
+                    float normalized = (v - minVal) / range;
+                    normalized = std::max(0.0f, std::min(1.0f, normalized));
+                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
+                }
+            }
+        }
+
+        // Create colorized bitmap and scale to requested size
+        HBITMAP hBitmap = CreateColorizedBitmap(grayscale.data(), width, height);
+        return ScaleBitmap(hBitmap, maxSize);
+    }
+    catch (const std::exception& e)
+    {
+        dbg.push_back(L"=== EXCEPTION ===");
+        wchar_t wMsg[256];
+        MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 256);
+        dbg.push_back(wMsg);
+        return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, dbg);
     }
     catch (...)
     {
-        return nullptr;
+        dbg.push_back(L"=== EXCEPTION ===");
+        dbg.push_back(L"Unknown exception");
+        return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, dbg);
+    }
+}
+
+HBITMAP VdsRenderer::Render2D(int maxSize)
+{
+    std::vector<std::wstring> dbg;  // Debug info for error bitmap
+
+    if (!m_vdsHandle || !m_layout)
+    {
+        dbg.push_back(L"VDS Error");
+        dbg.push_back(L"Handle or layout is null");
+        return CreateDebugBitmap(256, 256, dbg);
+    }
+
+    // Add detailed debug info
+    wchar_t buf[128];
+    swprintf_s(buf, L"Dimensionality: %d", m_layout->GetDimensionality());
+    dbg.push_back(buf);
+
+    for (int d = 0; d < m_layout->GetDimensionality(); d++)
+    {
+        auto axis = m_layout->GetAxisDescriptor(d);
+        wchar_t name[64];
+        MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, name, 64);
+        swprintf_s(buf, L"  [%d] %s: %d samples", d, name, m_layout->GetDimensionNumSamples(d));
+        dbg.push_back(buf);
+    }
+
+    try
+    {
+        OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(m_vdsHandle);
+
+        int voxelMin[OpenVDS::Dimensionality_Max] = { 0, 0, 0, 0, 0, 0 };
+        int voxelMax[OpenVDS::Dimensionality_Max] = { 1, 1, 1, 1, 1, 1 };
+
+        // For 2D data, use all of dimensions 0 and 1
+        voxelMin[0] = 0;
+        voxelMax[0] = m_layout->GetDimensionNumSamples(0);
+        voxelMin[1] = 0;
+        voxelMax[1] = m_layout->GetDimensionNumSamples(1);
+
+        int dim0Size = m_layout->GetDimensionNumSamples(0);
+        int dim1Size = m_layout->GetDimensionNumSamples(1);
+
+        swprintf_s(buf, L"Display: dim0 x dim1 (%dx%d)", dim0Size, dim1Size);
+        dbg.push_back(buf);
+
+        // Check if this looks like seismic data with Sample as dim0
+        bool needsTranspose = false;
+        auto axis0 = m_layout->GetAxisDescriptor(0);
+        const char* axis0Name = axis0.GetName();
+        if (axis0Name)
+        {
+            std::string name(axis0Name);
+            for (auto& c : name) c = std::tolower(c);
+            if (name.find("sample") != std::string::npos ||
+                name.find("time") != std::string::npos ||
+                name.find("depth") != std::string::npos ||
+                name.find("z") != std::string::npos)
+            {
+                needsTranspose = true;
+            }
+        }
+
+        int width, height;
+        if (needsTranspose)
+        {
+            width = dim1Size;
+            height = dim0Size;
+            swprintf_s(buf, L"Transpose: YES (%dx%d)", width, height);
+        }
+        else
+        {
+            width = dim0Size;
+            height = dim1Size;
+            swprintf_s(buf, L"Transpose: NO (%dx%d)", width, height);
+        }
+        dbg.push_back(buf);
+
+        std::vector<float> buffer(dim0Size * dim1Size);
+
+        // Find an available dimension group
+        OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
+        const wchar_t* dimGroupName = L"Dimensions_012";
+
+        OpenVDS::DimensionsND candidates[] = {
+            OpenVDS::Dimensions_01,
+            OpenVDS::Dimensions_012,
+            OpenVDS::Dimensions_02
+        };
+        const wchar_t* candidateNames[] = {
+            L"Dimensions_01",
+            L"Dimensions_012",
+            L"Dimensions_02"
+        };
+
+        for (int i = 0; i < 3; i++)
+        {
+            auto status = accessManager.GetVDSProduceStatus(candidates[i], 0, 0);
+            if (status != OpenVDS::VDSProduceStatus::Unavailable)
+            {
+                dimGroup = candidates[i];
+                dimGroupName = candidateNames[i];
+                break;
+            }
+        }
+
+        swprintf_s(buf, L"DimGroup: %s", dimGroupName);
+        dbg.push_back(buf);
+
+        auto request = accessManager.RequestVolumeSubset<float>(
+            buffer.data(),
+            buffer.size() * sizeof(float),
+            dimGroup,
+            0, 0,  // LOD0, channel 0
+            voxelMin, voxelMax
+        );
+
+        if (!request->WaitForCompletion())
+        {
+            dbg.push_back(L"");
+            dbg.push_back(L"ERROR: Request failed!");
+            swprintf_s(buf, L"Code: %d", request->GetErrorCode());
+            dbg.push_back(buf);
+
+            std::string errMsg = request->GetErrorMessage();
+            wchar_t wErrMsg[256];
+            MultiByteToWideChar(CP_UTF8, 0, errMsg.c_str(), -1, wErrMsg, 256);
+            // Split long error messages
+            if (errMsg.length() > 40)
+            {
+                swprintf_s(buf, L"Msg: %.40s", wErrMsg);
+                dbg.push_back(buf);
+            }
+            else
+            {
+                swprintf_s(buf, L"Msg: %s", wErrMsg);
+                dbg.push_back(buf);
+            }
+
+            return CreateDebugBitmap(256, 256, dbg);
+        }
+        dbg.push_back(L"Request: OK");
+
+        // Compute actual min/max from the data
+        float minVal = buffer[0];
+        float maxVal = buffer[0];
+        int nanCount = 0;
+        int infCount = 0;
+
+        for (size_t i = 0; i < buffer.size(); i++)
+        {
+            float v = buffer[i];
+            if (std::isnan(v)) { nanCount++; continue; }
+            if (std::isinf(v)) { infCount++; continue; }
+            if (v < minVal) minVal = v;
+            if (v > maxVal) maxVal = v;
+        }
+
+        // Fallback to channel metadata if data range is degenerate
+        if (maxVal - minVal < 1e-6f)
+        {
+            minVal = m_layout->GetChannelValueRangeMin(0);
+            maxVal = m_layout->GetChannelValueRangeMax(0);
+        }
+
+        // Create grayscale buffer with proper layout
+        std::vector<uint8_t> grayscale(width * height);
+        float range = maxVal - minVal;
+        if (range < 1e-6f) range = 1.0f;
+
+        if (needsTranspose)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    float v = buffer[x * dim0Size + y];
+                    if (!std::isfinite(v)) v = minVal;
+                    float normalized = (v - minVal) / range;
+                    normalized = std::max(0.0f, std::min(1.0f, normalized));
+                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
+                }
+            }
+        }
+        else
+        {
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    float v = buffer[y * dim0Size + x];
+                    if (!std::isfinite(v)) v = minVal;
+                    float normalized = (v - minVal) / range;
+                    normalized = std::max(0.0f, std::min(1.0f, normalized));
+                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
+                }
+            }
+        }
+
+        HBITMAP hBitmap = CreateColorizedBitmap(grayscale.data(), width, height);
+        return ScaleBitmap(hBitmap, maxSize);
+    }
+    catch (const std::exception& e)
+    {
+        dbg.push_back(L"");
+        dbg.push_back(L"EXCEPTION:");
+        wchar_t wMsg[256];
+        MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 256);
+        dbg.push_back(wMsg);
+        return CreateDebugBitmap(256, 256, dbg);
+    }
+    catch (...)
+    {
+        dbg.push_back(L"");
+        dbg.push_back(L"UNKNOWN EXCEPTION");
+        return CreateDebugBitmap(256, 256, dbg);
     }
 }

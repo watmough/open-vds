@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <stdint.h>
+#include <mutex>
 
 #include <OpenVDS/openvds_export.h>
 #include <OpenVDS/Error.h>
@@ -126,6 +127,7 @@ private:
   FileView::SystemFileMappingObject * m_pFileMappingObject;
 #ifdef _WIN32
   ::IStream* _pIStream;  // Borrowed IStream pointer (Windows only, for IStream-based access)
+  mutable std::mutex _iStreamMutex;  // Mutex to protect IStream access (IStream is not thread-safe)
 #endif
 };
 

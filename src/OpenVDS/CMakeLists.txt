@@ -404,7 +404,9 @@ target_include_directories(openvds
         $<INSTALL_INTERFACE:include>
 )
 
-install(TARGETS openvds
+# static lib, need to explicitly export everything, or use public linkage ???
+
+install(TARGETS openvds openvds_objects hue_bds_objects
   EXPORT openvds-export
   ARCHIVE
     DESTINATION ${CMAKE_INSTALL_LIBDIR}${LIB_TOOLSET_DIR}
@@ -428,7 +430,7 @@ install(
 
 export(
     TARGETS
-        openvds
+        openvds openvds_objects hue_bds_objects
     NAMESPACE
         openvds::
     FILE

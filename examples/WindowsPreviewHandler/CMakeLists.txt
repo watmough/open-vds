@@ -47,6 +47,30 @@ if(WIN32)
     LIBRARY DESTINATION lib
   )
 
+  # VDS Render Test Harness - standalone command-line tool for debugging
+  add_executable(VdsRenderTest
+    VdsRenderTest.cpp
+  )
+
+  target_link_libraries(VdsRenderTest
+    PRIVATE
+      openvds::openvds
+      shlwapi
+  )
+
+  set_target_properties(VdsRenderTest PROPERTIES
+    FOLDER examples
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+  )
+
+  setWarningFlagsForTarget(VdsRenderTest)
+  copyDllForTarget(VdsRenderTest)
+
+  install(TARGETS VdsRenderTest
+    RUNTIME DESTINATION bin
+  )
+
 else()
   message(STATUS "VdsShellExtension is only available on Windows")
 endif()

@@ -548,6 +548,10 @@ private:
     {
         if (m_viewMode == ViewMode::Slice && m_renderer)
         {
+            // No slice navigation for 2D data
+            if (m_renderer->GetDimensionality() <= 2)
+                return;
+
             int maxSlice = m_renderer->GetSliceCount(m_dimension) - 1;
             m_sliceIndex = std::max(0, std::min(maxSlice, m_sliceIndex + delta));
             UpdateCachedBitmap();
@@ -661,12 +665,23 @@ private:
         ::SetBkMode(hdc, TRANSPARENT);
 
         wchar_t buf[256];
-        const wchar_t* dimName = m_renderer->GetDimensionName(m_dimension);
-        swprintf_s(buf, L"%s Slice %d/%d  |  [V]=Metadata  [↑↓]=Navigate  [←→]=Dimension%s",
-                  dimName,
-                  m_sliceIndex + 1,
-                  m_renderer->GetSliceCount(m_dimension),
-                  m_hasFocus ? L"" : L"  |  Click to enable keyboard");
+        int dimensionality = m_renderer->GetDimensionality();
+
+        if (dimensionality == 2)
+        {
+            // For 2D data, no slice navigation
+            swprintf_s(buf, L"2D Data View  |  [V]=Metadata%s",
+                      m_hasFocus ? L"" : L"  |  Click to enable keyboard");
+        }
+        else
+        {
+            const wchar_t* dimName = m_renderer->GetDimensionName(m_dimension);
+            swprintf_s(buf, L"%s Slice %d/%d  |  [V]=Metadata  [↑↓]=Navigate  [←→]=Dimension%s",
+                      dimName,
+                      m_sliceIndex + 1,
+                      m_renderer->GetSliceCount(m_dimension),
+                      m_hasFocus ? L"" : L"  |  Click to enable keyboard");
+        }
 
         RECT textRect = rc;
         textRect.top = textRect.bottom - 30;

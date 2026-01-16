@@ -70,4 +70,7 @@ private:
     // Create a colorized bitmap from grayscale data (blue-white-red colormap)
     HBITMAP CreateColorizedBitmap(const uint8_t* grayscaleData,
                                   int width, int height);
+
+    // Render entire 2D dataset
+    HBITMAP Render2D(int maxSize);
 };

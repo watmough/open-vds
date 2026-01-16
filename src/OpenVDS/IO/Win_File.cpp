@@ -365,6 +365,7 @@ int64_t File::Size(Error& error) const
   // Handle IStream mode
   if (_pIStream)
   {
+    std::lock_guard<std::mutex> lock(_iStreamMutex);
     STATSTG stat;
     HRESULT hr = _pIStream->Stat(&stat, STATFLAG_NONAME);
     if (FAILED(hr))
@@ -415,6 +416,9 @@ bool File::Read(void* pxData, int64_t nOffset, int32_t nLength, Error& error) co
   // Handle IStream mode
   if (_pIStream)
   {
+    // Lock mutex to protect IStream access (IStream is not thread-safe)
+    std::lock_guard<std::mutex> lock(_iStreamMutex);
+
     LARGE_INTEGER seekPos;
     seekPos.QuadPart = nOffset;
     HRESULT hr = _pIStream->Seek(seekPos, STREAM_SEEK_SET, nullptr);
