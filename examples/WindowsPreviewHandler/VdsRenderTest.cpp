@@ -1,10 +1,16 @@
 /****************************************************************************
 ** VDS Render Test Harness
 **
-** Simple command-line tool to test VDS rendering logic independently
-** of the Windows Shell extension.
+** Command-line tool to test VDS rendering logic and benchmark performance.
 **
-** Usage: VdsRenderTest.exe <input.vds> [output.bmp] [dimension] [sliceIndex]
+** Usage:
+**   VdsRenderTest.exe <input.vds> [output.bmp] [dimension] [sliceIndex]
+**   VdsRenderTest.exe --benchmark <folder> [--output report.csv]
+**
+** Benchmark mode recursively processes all .vds files, testing:
+**   - Different slice dimensions
+**   - Different LOD levels
+**   - Recording timing and success/failure
 ****************************************************************************/
 
 #define WIN32_LEAN_AND_MEAN
@@ -19,15 +25,160 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #pragma comment(lib, "shlwapi.lib")
 
-// Save HBITMAP to BMP file
+namespace fs = std::filesystem;
+
+// ============================================================================
+// Timing utilities
+// ============================================================================
+
+using Clock = std::chrono::high_resolution_clock;
+using TimePoint = Clock::time_point;
+using Duration = std::chrono::duration<double, std::milli>;
+
+double ElapsedMs(TimePoint start, TimePoint end)
+{
+    return std::chrono::duration_cast<Duration>(end - start).count();
+}
+
+// ============================================================================
+// Result tracking
+// ============================================================================
+
+struct RenderResult
+{
+    std::string filename;
+    int dimensionality;
+    int dimension;      // Which dimension was sliced (-1 for 2D)
+    int sliceIndex;
+    int lod;
+    std::string dimGroup;
+    int outputWidth;
+    int outputHeight;
+    int64_t totalVoxels;
+    bool success;
+    std::string errorMessage;
+    double openTimeMs;
+    double renderTimeMs;
+    double totalTimeMs;
+};
+
+std::vector<RenderResult> g_results;
+
+void WriteResultsCsv(const std::string& filename)
+{
+    std::ofstream out(filename);
+    if (!out.is_open())
+    {
+        printf("ERROR: Cannot write to %s\n", filename.c_str());
+        return;
+    }
+
+    // Header
+    out << "Filename,Dimensionality,SliceDim,SliceIndex,LOD,DimGroup,"
+        << "Width,Height,TotalVoxels,Success,ErrorMessage,"
+        << "OpenTimeMs,RenderTimeMs,TotalTimeMs\n";
+
+    for (const auto& r : g_results)
+    {
+        out << "\"" << r.filename << "\","
+            << r.dimensionality << ","
+            << r.dimension << ","
+            << r.sliceIndex << ","
+            << r.lod << ","
+            << "\"" << r.dimGroup << "\","
+            << r.outputWidth << ","
+            << r.outputHeight << ","
+            << r.totalVoxels << ","
+            << (r.success ? "TRUE" : "FALSE") << ","
+            << "\"" << r.errorMessage << "\","
+            << std::fixed << std::setprecision(2)
+            << r.openTimeMs << ","
+            << r.renderTimeMs << ","
+            << r.totalTimeMs << "\n";
+    }
+
+    out.close();
+    printf("\nResults written to: %s\n", filename.c_str());
+}
+
+void PrintResultsSummary()
+{
+    if (g_results.empty())
+    {
+        printf("\nNo results to summarize.\n");
+        return;
+    }
+
+    int totalTests = (int)g_results.size();
+    int successes = 0;
+    int failures = 0;
+    double totalRenderTime = 0;
+    double minRenderTime = 1e9;
+    double maxRenderTime = 0;
+
+    std::map<std::string, int> errorCounts;
+
+    for (const auto& r : g_results)
+    {
+        if (r.success)
+        {
+            successes++;
+            totalRenderTime += r.renderTimeMs;
+            minRenderTime = std::min(minRenderTime, r.renderTimeMs);
+            maxRenderTime = std::max(maxRenderTime, r.renderTimeMs);
+        }
+        else
+        {
+            failures++;
+            errorCounts[r.errorMessage]++;
+        }
+    }
+
+    printf("\n");
+    printf("================================================================================\n");
+    printf("BENCHMARK SUMMARY\n");
+    printf("================================================================================\n");
+    printf("Total tests:     %d\n", totalTests);
+    printf("Successes:       %d (%.1f%%)\n", successes, 100.0 * successes / totalTests);
+    printf("Failures:        %d (%.1f%%)\n", failures, 100.0 * failures / totalTests);
+
+    if (successes > 0)
+    {
+        printf("\nRender times (successful):\n");
+        printf("  Min:     %.2f ms\n", minRenderTime);
+        printf("  Max:     %.2f ms\n", maxRenderTime);
+        printf("  Average: %.2f ms\n", totalRenderTime / successes);
+    }
+
+    if (!errorCounts.empty())
+    {
+        printf("\nError breakdown:\n");
+        for (const auto& [msg, count] : errorCounts)
+        {
+            printf("  [%d] %s\n", count, msg.c_str());
+        }
+    }
+    printf("================================================================================\n");
+}
+
+// ============================================================================
+// Bitmap utilities
+// ============================================================================
+
 bool SaveBitmapToFile(HBITMAP hBitmap, const wchar_t* filename, bool flipY = false)
 {
     if (!hBitmap)
@@ -41,17 +192,16 @@ bool SaveBitmapToFile(HBITMAP hBitmap, const wchar_t* filename, bool flipY = fal
 
     bmih.biSize = sizeof(BITMAPINFOHEADER);
     bmih.biWidth = bm.bmWidth;
-    bmih.biHeight = bm.bmHeight;  // Positive = bottom-up (standard BMP)
+    bmih.biHeight = bm.bmHeight;
     bmih.biPlanes = 1;
     bmih.biBitCount = 32;
     bmih.biCompression = BI_RGB;
     bmih.biSizeImage = bm.bmWidth * bm.bmHeight * 4;
 
-    bmfh.bfType = 0x4D42;  // 'BM'
+    bmfh.bfType = 0x4D42;
     bmfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     bmfh.bfSize = bmfh.bfOffBits + bmih.biSizeImage;
 
-    // Get bitmap bits
     std::vector<uint8_t> pixels(bmih.biSizeImage);
 
     HDC hdc = GetDC(nullptr);
@@ -65,7 +215,6 @@ bool SaveBitmapToFile(HBITMAP hBitmap, const wchar_t* filename, bool flipY = fal
     }
     ReleaseDC(nullptr, hdc);
 
-    // Flip Y-axis if requested (usually not needed - GetDIBits handles conversion)
     if (flipY)
     {
         int rowSize = bm.bmWidth * 4;
@@ -80,7 +229,6 @@ bool SaveBitmapToFile(HBITMAP hBitmap, const wchar_t* filename, bool flipY = fal
         }
     }
 
-    // Write to file
     FILE* f = nullptr;
     if (_wfopen_s(&f, filename, L"wb") != 0 || !f)
         return false;
@@ -93,79 +241,12 @@ bool SaveBitmapToFile(HBITMAP hBitmap, const wchar_t* filename, bool flipY = fal
     return true;
 }
 
-// Create a debug image with text information (black text on white background)
-HBITMAP CreateDebugBitmap(int width, int height, const std::vector<std::string>& lines)
-{
-    HDC hdcScreen = GetDC(nullptr);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;  // Top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* pBits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-    if (!hBitmap)
-    {
-        DeleteDC(hdcMem);
-        ReleaseDC(nullptr, hdcScreen);
-        return nullptr;
-    }
-
-    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
-
-    // Fill with white background
-    RECT rc = { 0, 0, width, height };
-    HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(hdcMem, &rc, hBrush);
-    DeleteObject(hBrush);
-
-    // Black text
-    SetBkMode(hdcMem, TRANSPARENT);
-    SetTextColor(hdcMem, RGB(0, 0, 0));
-
-    HFONT hFont = CreateFontW(-11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    HFONT hOldFont = (HFONT)SelectObject(hdcMem, hFont);
-
-    int y = 6;
-    int lineHeight = 13;
-    for (const auto& line : lines)
-    {
-        if (line.empty())
-            continue;  // Skip blank lines
-        if (y + lineHeight > height - 6)
-            break;
-
-        wchar_t wline[256];
-        MultiByteToWideChar(CP_UTF8, 0, line.c_str(), -1, wline, 256);
-
-        RECT textRect = { 6, y, width - 6, y + lineHeight };
-        DrawTextW(hdcMem, wline, -1, &textRect, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-        y += lineHeight;
-    }
-
-    SelectObject(hdcMem, hOldFont);
-    DeleteObject(hFont);
-    SelectObject(hdcMem, hOldBitmap);
-    DeleteDC(hdcMem);
-    ReleaseDC(nullptr, hdcScreen);
-
-    return hBitmap;
-}
-
-// Create colorized bitmap from grayscale (blue-white-red colormap)
 HBITMAP CreateColorizedBitmap(const uint8_t* grayscaleData, int width, int height)
 {
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height;  // Top-down
+    bmi.bmiHeader.biHeight = -height;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -202,65 +283,137 @@ HBITMAP CreateColorizedBitmap(const uint8_t* grayscaleData, int width, int heigh
     return hBitmap;
 }
 
-void PrintVdsInfo(OpenVDS::VolumeDataLayout* layout)
+// ============================================================================
+// VDS Info
+// ============================================================================
+
+void PrintVdsInfo(OpenVDS::VolumeDataLayout* layout, bool verbose = true)
 {
-    printf("\n=== VDS Information ===\n");
-    printf("Dimensionality: %d\n", layout->GetDimensionality());
-
-    printf("\nDimensions:\n");
-    for (int dim = 0; dim < layout->GetDimensionality(); dim++)
+    if (verbose)
     {
-        auto axis = layout->GetAxisDescriptor(dim);
-        printf("  [%d] %s: %d samples, range [%.2f, %.2f] %s\n",
-               dim,
-               axis.GetName(),
-               layout->GetDimensionNumSamples(dim),
-               axis.GetCoordinateMin(),
-               axis.GetCoordinateMax(),
-               axis.GetUnit());
-    }
+        printf("\n=== VDS Information ===\n");
+        printf("Dimensionality: %d\n", layout->GetDimensionality());
 
-    printf("\nChannels: %d\n", layout->GetChannelCount());
-    for (int ch = 0; ch < layout->GetChannelCount(); ch++)
-    {
-        auto channel = layout->GetChannelDescriptor(ch);
-        printf("  [%d] %s: value range [%.2e, %.2e]\n",
-               ch,
-               channel.GetName(),
-               channel.GetValueRangeMin(),
-               channel.GetValueRangeMax());
+        printf("\nDimensions:\n");
+        for (int dim = 0; dim < layout->GetDimensionality(); dim++)
+        {
+            auto axis = layout->GetAxisDescriptor(dim);
+            printf("  [%d] %s: %d samples, range [%.2f, %.2f] %s\n",
+                   dim,
+                   axis.GetName(),
+                   layout->GetDimensionNumSamples(dim),
+                   axis.GetCoordinateMin(),
+                   axis.GetCoordinateMax(),
+                   axis.GetUnit());
+        }
+
+        printf("\nChannels: %d\n", layout->GetChannelCount());
+        for (int ch = 0; ch < layout->GetChannelCount(); ch++)
+        {
+            auto channel = layout->GetChannelDescriptor(ch);
+            printf("  [%d] %s: value range [%.2e, %.2e]\n",
+                   ch,
+                   channel.GetName(),
+                   channel.GetValueRangeMin(),
+                   channel.GetValueRangeMax());
+        }
+        printf("\n");
     }
-    printf("\n");
 }
 
-// Structure to collect debug info for error bitmap
-struct DebugInfo {
-    std::vector<std::string> lines;
-    void add(const char* fmt, ...) {
-        char buf[256];
-        va_list args;
-        va_start(args, fmt);
-        vsnprintf(buf, sizeof(buf), fmt, args);
-        va_end(args);
-        lines.push_back(buf);
-        printf("%s\n", buf);
-    }
+// ============================================================================
+// LOD Information
+// ============================================================================
+
+struct LODInfo
+{
+    int lod;
+    bool available;
+    std::string status;  // "Normal", "Remapped", "Unavailable"
+    int dim0Samples;
+    int dim1Samples;
 };
 
-HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* layout,
-                    int dimension, int sliceIndex, bool generateDebugOnError = true)
+std::vector<LODInfo> GetAvailableLODs(OpenVDS::VolumeDataAccessManager& accessManager,
+                                       OpenVDS::VolumeDataLayout* layout,
+                                       OpenVDS::DimensionsND dimGroup)
 {
-    DebugInfo dbg;
-    int dimensionality = layout->GetDimensionality();
+    std::vector<LODInfo> lods;
 
-    dbg.add("Dimensionality: %d", dimensionality);
+    // LODLevels enum value equals the number of LOD levels
+    int maxLOD = static_cast<int>(layout->GetLayoutDescriptor().GetLODLevels());
+    if (maxLOD == 0) maxLOD = 1;  // At least LOD0 is always available
 
-    // Add dimension info
-    for (int dim = 0; dim < dimensionality; dim++)
+    for (int lod = 0; lod < maxLOD; lod++)
     {
-        auto axis = layout->GetAxisDescriptor(dim);
-        dbg.add("  [%d] %s: %d samples", dim, axis.GetName(), layout->GetDimensionNumSamples(dim));
+        LODInfo info;
+        info.lod = lod;
+
+        auto status = accessManager.GetVDSProduceStatus(dimGroup, lod, 0);
+        switch (status)
+        {
+        case OpenVDS::VDSProduceStatus::Normal:
+            info.available = true;
+            info.status = "Normal";
+            break;
+        case OpenVDS::VDSProduceStatus::Remapped:
+            info.available = true;
+            info.status = "Remapped";
+            break;
+        case OpenVDS::VDSProduceStatus::Unavailable:
+        default:
+            info.available = false;
+            info.status = "Unavailable";
+            break;
+        }
+
+        // Calculate expected dimensions at this LOD
+        // Note: OpenVDS returns full-res data regardless of LOD requested,
+        // but higher LOD = faster wavelet decompression
+        info.dim0Samples = layout->GetDimensionNumSamples(0);
+        info.dim1Samples = layout->GetDimensionNumSamples(1);
+
+        lods.push_back(info);
     }
+
+    return lods;
+}
+
+// ============================================================================
+// Core rendering with timing
+// ============================================================================
+
+struct RenderParams
+{
+    int dimension;
+    int sliceIndex;
+    int lod;
+    bool quiet;  // Suppress per-render output
+};
+
+struct RenderOutput
+{
+    HBITMAP bitmap;
+    int width;
+    int height;
+    int64_t totalVoxels;
+    std::string dimGroup;
+    bool success;
+    std::string errorMessage;
+    double renderTimeMs;
+};
+
+RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
+                                    OpenVDS::VolumeDataLayout* layout,
+                                    const RenderParams& params)
+{
+    RenderOutput output = {};
+    output.bitmap = nullptr;
+    output.success = false;
+
+    TimePoint startRender = Clock::now();
+
+    int dimensionality = layout->GetDimensionality();
 
     try
     {
@@ -272,7 +425,6 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
         int displayDims[OpenVDS::Dimensionality_Max - 1];
         int displayDimCount = 0;
 
-        // For 2D data, use all dimensions
         if (dimensionality == 2)
         {
             displayDims[0] = 0;
@@ -285,14 +437,12 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
         }
         else
         {
-            // For 3D+ data, slice one dimension
             for (int dim = 0; dim < dimensionality; dim++)
             {
-                if (dim == dimension)
+                if (dim == params.dimension)
                 {
-                    voxelMin[dim] = sliceIndex;
-                    voxelMax[dim] = sliceIndex + 1;
-                    dbg.add("Slice dim %d at index %d", dim, sliceIndex);
+                    voxelMin[dim] = params.sliceIndex;
+                    voxelMax[dim] = params.sliceIndex + 1;
                 }
                 else
                 {
@@ -302,7 +452,6 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
                 }
             }
 
-            // For 4D data, fix extra dimensions at midpoint
             if (displayDimCount > 2)
             {
                 int dim = displayDims[2];
@@ -317,11 +466,8 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
         int dim0Size = layout->GetDimensionNumSamples(dim0);
         int dim1Size = layout->GetDimensionNumSamples(dim1);
 
-        dbg.add("Display: dim%d x dim%d (%dx%d)", dim0, dim1, dim0Size, dim1Size);
-
-        // Determine if transpose is needed
+        // Determine transpose
         bool needsTranspose = false;
-
         if (dimensionality == 2)
         {
             auto axis0 = layout->GetAxisDescriptor(0);
@@ -344,23 +490,16 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
             needsTranspose = (dim0 == 0);
         }
 
-        int width, height;
-        if (needsTranspose)
-        {
-            width = dim1Size;
-            height = dim0Size;
-            dbg.add("Transpose: YES (%dx%d)", width, height);
-        }
-        else
-        {
-            width = dim0Size;
-            height = dim1Size;
-            dbg.add("Transpose: NO (%dx%d)", width, height);
-        }
+        int width = needsTranspose ? dim1Size : dim0Size;
+        int height = needsTranspose ? dim0Size : dim1Size;
+
+        output.width = width;
+        output.height = height;
+        output.totalVoxels = (int64_t)dim0Size * dim1Size;
 
         std::vector<float> buffer(dim0Size * dim1Size);
 
-        // Find an available dimension group
+        // Find available dimension group
         OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
         const char* dimGroupName = "Dimensions_012";
 
@@ -375,83 +514,65 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
             "Dimensions_02"
         };
 
+        bool foundGroup = false;
         for (int i = 0; i < 3; i++)
         {
-            auto status = accessManager.GetVDSProduceStatus(candidates[i], 0, 0);
+            auto status = accessManager.GetVDSProduceStatus(candidates[i], params.lod, 0);
             if (status != OpenVDS::VDSProduceStatus::Unavailable)
             {
                 dimGroup = candidates[i];
                 dimGroupName = candidateNames[i];
+                foundGroup = true;
                 break;
             }
         }
 
-        dbg.add("DimGroup: %s", dimGroupName);
+        output.dimGroup = dimGroupName;
 
+        if (!foundGroup)
+        {
+            output.errorMessage = "No available dimension group for LOD " + std::to_string(params.lod);
+            output.renderTimeMs = ElapsedMs(startRender, Clock::now());
+            return output;
+        }
+
+        // Request data
         auto request = accessManager.RequestVolumeSubset<float>(
             buffer.data(),
             buffer.size() * sizeof(float),
             dimGroup,
-            0, 0,
+            params.lod, 0,
             voxelMin, voxelMax
         );
 
         if (!request->WaitForCompletion())
         {
-            dbg.add("");
-            dbg.add("ERROR: Request failed!");
-            dbg.add("Code: %d", request->GetErrorCode());
-            std::string errMsg = request->GetErrorMessage();
-            // Split long error messages
-            if (errMsg.length() > 40)
-            {
-                dbg.add("Msg: %s", errMsg.substr(0, 40).c_str());
-                for (size_t i = 40; i < errMsg.length(); i += 40)
-                    dbg.add("     %s", errMsg.substr(i, 40).c_str());
-            }
-            else
-            {
-                dbg.add("Msg: %s", errMsg.c_str());
-            }
-
-            if (generateDebugOnError)
-                return CreateDebugBitmap(256, 256, dbg.lines);
-            return nullptr;
+            output.errorMessage = request->GetErrorMessage();
+            if (output.errorMessage.empty())
+                output.errorMessage = "Request failed (code " + std::to_string(request->GetErrorCode()) + ")";
+            output.renderTimeMs = ElapsedMs(startRender, Clock::now());
+            return output;
         }
-        dbg.add("Request: OK");
 
-        // Compute actual min/max
+        // Compute min/max
         float minVal = buffer[0];
         float maxVal = buffer[0];
-        int nanCount = 0;
-        int infCount = 0;
 
         for (size_t i = 0; i < buffer.size(); i++)
         {
             float v = buffer[i];
-            if (std::isnan(v)) { nanCount++; continue; }
-            if (std::isinf(v)) { infCount++; continue; }
+            if (std::isnan(v) || std::isinf(v)) continue;
             if (v < minVal) minVal = v;
             if (v > maxVal) maxVal = v;
         }
 
-        printf("  Data range: [%g, %g]\n", minVal, maxVal);
-        if (nanCount > 0) printf("  WARNING: %d NaN values\n", nanCount);
-        if (infCount > 0) printf("  WARNING: %d Inf values\n", infCount);
-
-        // Check channel metadata range
-        float metaMin = layout->GetChannelValueRangeMin(0);
-        float metaMax = layout->GetChannelValueRangeMax(0);
-        printf("  Channel metadata range: [%g, %g]\n", metaMin, metaMax);
-
         if (maxVal - minVal < 1e-6f)
         {
-            printf("  WARNING: Degenerate range, using metadata\n");
-            minVal = metaMin;
-            maxVal = metaMax;
+            minVal = layout->GetChannelValueRangeMin(0);
+            maxVal = layout->GetChannelValueRangeMax(0);
         }
 
-        // Create grayscale with transpose handling
+        // Create grayscale
         std::vector<uint8_t> grayscale(width * height);
         float range = maxVal - minVal;
         if (range < 1e-6f) range = 1.0f;
@@ -485,40 +606,349 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
             }
         }
 
-        dbg.add("Creating bitmap...");
-        return CreateColorizedBitmap(grayscale.data(), width, height);
+        output.bitmap = CreateColorizedBitmap(grayscale.data(), width, height);
+        output.success = (output.bitmap != nullptr);
+        if (!output.success)
+            output.errorMessage = "Failed to create bitmap";
     }
     catch (const std::exception& e)
     {
-        dbg.add("");
-        dbg.add("EXCEPTION: %s", e.what());
-        if (generateDebugOnError)
-            return CreateDebugBitmap(256, 256, dbg.lines);
-        return nullptr;
+        output.errorMessage = std::string("Exception: ") + e.what();
     }
     catch (...)
     {
-        dbg.add("");
-        dbg.add("UNKNOWN EXCEPTION");
-        if (generateDebugOnError)
-            return CreateDebugBitmap(256, 256, dbg.lines);
-        return nullptr;
+        output.errorMessage = "Unknown exception";
     }
+
+    output.renderTimeMs = ElapsedMs(startRender, Clock::now());
+    return output;
+}
+
+// ============================================================================
+// Benchmark a single VDS file
+// ============================================================================
+
+void BenchmarkVdsFile(const std::string& filepath, bool verbose = false)
+{
+    printf("\n--- %s ---\n", filepath.c_str());
+
+    TimePoint startOpen = Clock::now();
+
+    OpenVDS::Error error;
+    OpenVDS::VDSHandle vdsHandle = OpenVDS::Open(filepath, error);
+
+    double openTimeMs = ElapsedMs(startOpen, Clock::now());
+
+    if (error.code != 0 || !vdsHandle)
+    {
+        printf("  ERROR: Failed to open: %s\n", error.string.c_str());
+        RenderResult result;
+        result.filename = filepath;
+        result.dimensionality = 0;
+        result.dimension = -1;
+        result.sliceIndex = -1;
+        result.lod = 0;
+        result.success = false;
+        result.errorMessage = "Open failed: " + error.string;
+        result.openTimeMs = openTimeMs;
+        result.renderTimeMs = 0;
+        result.totalTimeMs = openTimeMs;
+        g_results.push_back(result);
+        return;
+    }
+
+    OpenVDS::VolumeDataLayout* layout = OpenVDS::GetLayout(vdsHandle);
+    if (!layout)
+    {
+        printf("  ERROR: Failed to get layout\n");
+        RenderResult result;
+        result.filename = filepath;
+        result.dimensionality = 0;
+        result.dimension = -1;
+        result.sliceIndex = -1;
+        result.lod = 0;
+        result.success = false;
+        result.errorMessage = "GetLayout failed";
+        result.openTimeMs = openTimeMs;
+        result.renderTimeMs = 0;
+        result.totalTimeMs = openTimeMs;
+        g_results.push_back(result);
+        OpenVDS::Close(vdsHandle, error);
+        return;
+    }
+
+    int dimensionality = layout->GetDimensionality();
+    // LODLevels enum value equals the number of LOD levels (0 means only LOD0)
+    int lodCount = static_cast<int>(layout->GetLayoutDescriptor().GetLODLevels());
+    if (lodCount == 0) lodCount = 1;  // At least LOD0
+
+    printf("  Dimensionality: %d, LOD count: %d, Open time: %.2f ms\n",
+           dimensionality, lodCount, openTimeMs);
+
+    // Print dimensions
+    for (int d = 0; d < dimensionality; d++)
+    {
+        auto axis = layout->GetAxisDescriptor(d);
+        printf("    [%d] %s: %d samples\n", d, axis.GetName(), layout->GetDimensionNumSamples(d));
+    }
+
+    OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(vdsHandle);
+
+    // Determine which dimensions to slice
+    std::vector<int> sliceDimensions;
+    if (dimensionality == 2)
+    {
+        sliceDimensions.push_back(-1);  // -1 means render full 2D
+    }
+    else
+    {
+        // Test slicing each dimension
+        for (int d = 0; d < dimensionality && d < 3; d++)
+        {
+            sliceDimensions.push_back(d);
+        }
+    }
+
+    // Determine which LODs to test
+    std::vector<int> lodsToTest;
+    for (int lod = 0; lod < lodCount; lod++)
+    {
+        lodsToTest.push_back(lod);
+    }
+    if (lodsToTest.empty())
+        lodsToTest.push_back(0);
+
+    // Test each combination
+    for (int sliceDim : sliceDimensions)
+    {
+        int sliceIndex = 0;
+        if (sliceDim >= 0)
+        {
+            sliceIndex = layout->GetDimensionNumSamples(sliceDim) / 2;
+        }
+
+        for (int lod : lodsToTest)
+        {
+            RenderParams params;
+            params.dimension = (sliceDim >= 0) ? sliceDim : 0;
+            params.sliceIndex = sliceIndex;
+            params.lod = lod;
+            params.quiet = !verbose;
+
+            // Check LOD availability first
+            OpenVDS::DimensionsND testGroup = OpenVDS::Dimensions_012;
+            if (dimensionality == 2)
+                testGroup = OpenVDS::Dimensions_01;
+
+            auto lodStatus = accessManager.GetVDSProduceStatus(testGroup, lod, 0);
+            const char* lodStatusStr = "Unknown";
+            switch (lodStatus)
+            {
+            case OpenVDS::VDSProduceStatus::Normal: lodStatusStr = "Normal"; break;
+            case OpenVDS::VDSProduceStatus::Remapped: lodStatusStr = "Remapped"; break;
+            case OpenVDS::VDSProduceStatus::Unavailable: lodStatusStr = "Unavailable"; break;
+            }
+
+            if (sliceDim < 0)
+            {
+                printf("  Test: 2D render, LOD%d (%s)... ", lod, lodStatusStr);
+            }
+            else
+            {
+                printf("  Test: dim%d slice %d, LOD%d (%s)... ", sliceDim, sliceIndex, lod, lodStatusStr);
+            }
+            fflush(stdout);
+
+            TimePoint startTest = Clock::now();
+            RenderOutput output = RenderSliceWithTiming(vdsHandle, layout, params);
+            double totalTestMs = ElapsedMs(startTest, Clock::now());
+
+            RenderResult result;
+            result.filename = filepath;
+            result.dimensionality = dimensionality;
+            result.dimension = sliceDim;
+            result.sliceIndex = sliceIndex;
+            result.lod = lod;
+            result.dimGroup = output.dimGroup;
+            result.outputWidth = output.width;
+            result.outputHeight = output.height;
+            result.totalVoxels = output.totalVoxels;
+            result.success = output.success;
+            result.errorMessage = output.errorMessage;
+            result.openTimeMs = openTimeMs;
+            result.renderTimeMs = output.renderTimeMs;
+            result.totalTimeMs = totalTestMs;
+
+            if (output.success)
+            {
+                printf("OK (%.2f ms, %dx%d, %s)\n",
+                       output.renderTimeMs, output.width, output.height, output.dimGroup.c_str());
+                DeleteObject(output.bitmap);
+            }
+            else
+            {
+                printf("FAILED: %s\n", output.errorMessage.c_str());
+            }
+
+            g_results.push_back(result);
+        }
+    }
+
+    OpenVDS::Close(vdsHandle, error);
+}
+
+// ============================================================================
+// Recursive folder scanning
+// ============================================================================
+
+std::vector<std::string> FindVdsFiles(const std::string& rootPath)
+{
+    std::vector<std::string> files;
+
+    try
+    {
+        for (const auto& entry : fs::recursive_directory_iterator(rootPath))
+        {
+            if (entry.is_regular_file())
+            {
+                std::string ext = entry.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == ".vds")
+                {
+                    files.push_back(entry.path().string());
+                }
+            }
+        }
+    }
+    catch (const std::exception& e)
+    {
+        printf("Error scanning directory: %s\n", e.what());
+    }
+
+    return files;
+}
+
+// ============================================================================
+// Single file render (original behavior)
+// ============================================================================
+
+HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* layout,
+                    int dimension, int sliceIndex)
+{
+    RenderParams params;
+    params.dimension = dimension;
+    params.sliceIndex = sliceIndex;
+    params.lod = 0;
+    params.quiet = false;
+
+    RenderOutput output = RenderSliceWithTiming(vdsHandle, layout, params);
+
+    if (!output.success)
+    {
+        printf("ERROR: %s\n", output.errorMessage.c_str());
+    }
+
+    return output.bitmap;
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+void PrintUsage()
+{
+    printf("VDS Render Test Harness\n\n");
+    printf("Usage:\n");
+    printf("  VdsRenderTest.exe <input.vds> [output.bmp] [dimension] [sliceIndex]\n");
+    printf("  VdsRenderTest.exe --benchmark <folder> [--output report.csv] [--verbose]\n");
+    printf("\n");
+    printf("Single file mode:\n");
+    printf("  input.vds   - Path to VDS file\n");
+    printf("  output.bmp  - Output bitmap file (default: output.bmp)\n");
+    printf("  dimension   - Dimension to slice (default: 2 for 3D, ignored for 2D)\n");
+    printf("  sliceIndex  - Slice index (default: middle slice)\n");
+    printf("\n");
+    printf("Benchmark mode:\n");
+    printf("  --benchmark <folder>  - Recursively process all .vds files in folder\n");
+    printf("  --output <file.csv>   - Write results to CSV file (default: benchmark_results.csv)\n");
+    printf("  --verbose             - Show detailed output for each render\n");
+    printf("\n");
+    printf("Benchmark tests each VDS with:\n");
+    printf("  - Different slice dimensions (for 3D+ data)\n");
+    printf("  - Different LOD levels where available\n");
+    printf("  - Records timing and success/failure\n");
 }
 
 int wmain(int argc, wchar_t* argv[])
 {
     if (argc < 2)
     {
-        printf("Usage: VdsRenderTest.exe <input.vds> [output.bmp] [dimension] [sliceIndex]\n");
-        printf("\n");
-        printf("  input.vds   - Path to VDS file\n");
-        printf("  output.bmp  - Output bitmap file (default: output.bmp)\n");
-        printf("  dimension   - Dimension to slice (default: 2 for 3D, ignored for 2D)\n");
-        printf("  sliceIndex  - Slice index (default: middle slice)\n");
+        PrintUsage();
         return 1;
     }
 
+    // Check for benchmark mode
+    std::wstring arg1 = argv[1];
+    if (arg1 == L"--benchmark" || arg1 == L"-b")
+    {
+        if (argc < 3)
+        {
+            printf("ERROR: --benchmark requires a folder path\n");
+            PrintUsage();
+            return 1;
+        }
+
+        char folderPath[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, argv[2], -1, folderPath, MAX_PATH, nullptr, nullptr);
+
+        std::string outputFile = "benchmark_results.csv";
+        bool verbose = false;
+
+        // Parse additional arguments
+        for (int i = 3; i < argc; i++)
+        {
+            std::wstring arg = argv[i];
+            if ((arg == L"--output" || arg == L"-o") && i + 1 < argc)
+            {
+                char outPath[MAX_PATH];
+                WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, outPath, MAX_PATH, nullptr, nullptr);
+                outputFile = outPath;
+            }
+            else if (arg == L"--verbose" || arg == L"-v")
+            {
+                verbose = true;
+            }
+        }
+
+        printf("Scanning for VDS files in: %s\n", folderPath);
+        std::vector<std::string> vdsFiles = FindVdsFiles(folderPath);
+
+        if (vdsFiles.empty())
+        {
+            printf("No .vds files found.\n");
+            return 1;
+        }
+
+        printf("Found %zu VDS files.\n", vdsFiles.size());
+
+        TimePoint startBenchmark = Clock::now();
+
+        for (const auto& file : vdsFiles)
+        {
+            BenchmarkVdsFile(file, verbose);
+        }
+
+        double totalBenchmarkTime = ElapsedMs(startBenchmark, Clock::now());
+
+        PrintResultsSummary();
+        printf("\nTotal benchmark time: %.2f seconds\n", totalBenchmarkTime / 1000.0);
+
+        WriteResultsCsv(outputFile);
+
+        return 0;
+    }
+
+    // Single file mode
     const wchar_t* inputPath = argv[1];
     const wchar_t* outputPath = (argc > 2) ? argv[2] : L"output.bmp";
     int dimension = (argc > 3) ? _wtoi(argv[3]) : -1;
@@ -527,11 +957,9 @@ int wmain(int argc, wchar_t* argv[])
     printf("Input: %ls\n", inputPath);
     printf("Output: %ls\n", outputPath);
 
-    // Convert wide string to narrow for OpenVDS
     char narrowPath[MAX_PATH];
     WideCharToMultiByte(CP_UTF8, 0, inputPath, -1, narrowPath, MAX_PATH, nullptr, nullptr);
 
-    // Open VDS file
     OpenVDS::Error error;
     OpenVDS::VDSHandle vdsHandle = OpenVDS::Open(narrowPath, error);
 
@@ -553,7 +981,6 @@ int wmain(int argc, wchar_t* argv[])
 
     int dimensionality = layout->GetDimensionality();
 
-    // Set defaults
     if (dimension < 0)
     {
         dimension = (dimensionality >= 3) ? 2 : 0;
@@ -564,7 +991,6 @@ int wmain(int argc, wchar_t* argv[])
         sliceIndex = layout->GetDimensionNumSamples(dimension) / 2;
     }
 
-    // Render
     HBITMAP hBitmap = RenderSlice(vdsHandle, layout, dimension, sliceIndex);
 
     if (!hBitmap)
@@ -574,7 +1000,6 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    // Save to file
     if (SaveBitmapToFile(hBitmap, outputPath))
     {
         printf("\nSuccess! Saved to: %ls\n", outputPath);
