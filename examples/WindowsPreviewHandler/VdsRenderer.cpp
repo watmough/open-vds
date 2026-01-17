@@ -16,6 +16,7 @@
 ****************************************************************************/
 
 #include "VdsRenderer.h"
+#include "utils/running_stats.hpp"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -24,13 +25,92 @@
 #include <sstream>
 #include <string>
 
-// Log file for debug output
-static const char* LOG_FILE_PATH = "c:\\temp\\openvds-thumbnails.log";
+// Build log file path in %USERPROFILE%\AppData\LocalLow\Temp
+static std::string GetLogFilePath(const char* filename)
+{
+    char expandedPath[MAX_PATH];
+    DWORD result = ExpandEnvironmentStringsA("%USERPROFILE%\\AppData\\LocalLow\\Temp\\", expandedPath, MAX_PATH);
+    if (result == 0 || result > MAX_PATH)
+    {
+        // Fallback to temp directory
+        return std::string("c:\\temp\\") + filename;
+    }
+    return std::string(expandedPath) + filename;
+}
+
+// Save HBITMAP to BMP file for debugging
+static bool SaveBitmapToFile(HBITMAP hBitmap, const char* filepath)
+{
+    if (!hBitmap || !filepath)
+        return false;
+
+    BITMAP bm;
+    GetObject(hBitmap, sizeof(bm), &bm);
+
+    // Get bitmap bits
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFOHEADER bi = {};
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = bm.bmWidth;
+    bi.biHeight = bm.bmHeight;  // Positive = bottom-up DIB
+    bi.biPlanes = 1;
+    bi.biBitCount = 32;
+    bi.biCompression = BI_RGB;
+
+    int rowSize = ((bm.bmWidth * 32 + 31) / 32) * 4;
+    int imageSize = rowSize * bm.bmHeight;
+
+    std::vector<uint8_t> bits(imageSize);
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader = bi;
+
+    // Get the DIB bits (this flips the image to bottom-up format)
+    HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hBitmap);
+    GetDIBits(hdcMem, hBitmap, 0, bm.bmHeight, bits.data(), &bmi, DIB_RGB_COLORS);
+    SelectObject(hdcMem, hOld);
+    DeleteDC(hdcMem);
+    ReleaseDC(nullptr, hdcScreen);
+
+    // Write BMP file
+    BITMAPFILEHEADER bf = {};
+    bf.bfType = 0x4D42;  // "BM"
+    bf.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + imageSize;
+    bf.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+    std::ofstream file(filepath, std::ios::binary);
+    if (!file.is_open())
+        return false;
+
+    file.write(reinterpret_cast<char*>(&bf), sizeof(bf));
+    file.write(reinterpret_cast<char*>(&bi), sizeof(bi));
+    file.write(reinterpret_cast<char*>(bits.data()), imageSize);
+    file.close();
+
+    return true;
+}
+
+// Default log file paths (lazily initialized)
+static std::string GetThumbnailLogPath()
+{
+    static std::string path = GetLogFilePath("openvds-thumbnails.log");
+    return path;
+}
+
+static std::string GetPreviewLogPath()
+{
+    static std::string path = GetLogFilePath("openvds-previewpane.log");
+    return path;
+}
 
 // Append debug lines to log file
-static void LogToFile(const std::vector<std::wstring>& lines)
+static void LogToFile(const std::vector<std::wstring>& lines, const std::string& logFilePath)
 {
-    std::ofstream logFile(LOG_FILE_PATH, std::ios::app);
+    if (logFilePath.empty())
+        return;
+
+    std::ofstream logFile(logFilePath, std::ios::app);
     if (!logFile.is_open())
         return;
 
@@ -41,7 +121,7 @@ static void LogToFile(const std::vector<std::wstring>& lines)
     sprintf_s(timestamp, "[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
               st.wYear, st.wMonth, st.wDay,
               st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    logFile << timestamp << "---\n";
+    logFile << timestamp;
 
     for (const auto& line : lines)
     {
@@ -51,7 +131,7 @@ static void LogToFile(const std::vector<std::wstring>& lines)
         {
             std::string utf8(len - 1, '\0');
             WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, &utf8[0], len, nullptr, nullptr);
-            logFile << utf8 << "\n";
+            logFile << utf8 << " | ";
         }
     }
     logFile << "\n";
@@ -73,6 +153,10 @@ static constexpr bool ENABLE_LOD_OPTIMIZATION = false;
 static constexpr float MAX_INVALID_RATIO = 0.5f;    // Warn if more than 50% NaN/Inf values
 static constexpr float MIN_VALUE_VARIANCE = 1e-10f; // Minimum variance to be considered valid data
 static constexpr float MAX_VALID_MAGNITUDE = 1e30f; // Filter values with |v| > this magnitude
+
+// Color mapping parameters - scale data to use mean +/- TRANSFER_FUNCTION_GAIN * stddev
+static constexpr float TRANSFER_FUNCTION_GAIN = 4.0f;  // Number of std deviations for full color range
+static constexpr bool SCALE_AROUND_MEAN = true;        // Center around mean (true) or zero (false)
 
 // Create a debug bitmap with error/status text (black text on white background)
 static HBITMAP CreateDebugBitmap(int width, int height, const std::vector<std::wstring>& lines)
@@ -137,10 +221,42 @@ static HBITMAP CreateDebugBitmap(int width, int height, const std::vector<std::w
 }
 
 VdsRenderer::VdsRenderer()
-    : m_vdsHandle(nullptr)
+    : m_logFilePath(GetThumbnailLogPath())
+    , m_vdsHandle(nullptr)
     , m_layout(nullptr)
     , m_stream(nullptr)
+    , m_wrappedStream(nullptr)
 {
+}
+
+void VdsRenderer::SetLogFile(const char* logFilePath)
+{
+    m_logFilePath = logFilePath ? logFilePath : "";
+}
+
+std::wstring VdsRenderer::GetVdsName() const
+{
+    if (!m_layout)
+        return L"Unknown";
+
+    // Try to get name from metadata (VolumeDataLayout inherits from MetadataReadAccess)
+    // Try common metadata keys for name
+    const char* nameKeys[] = { "SurveyName", "Name", "FileName", "DatasetName" };
+    for (const char* key : nameKeys)
+    {
+        if (m_layout->IsMetadataStringAvailable("", key))
+        {
+            const char* name = m_layout->GetMetadataString("", key);
+            if (name && name[0])
+            {
+                wchar_t wName[256];
+                MultiByteToWideChar(CP_UTF8, 0, name, -1, wName, 256);
+                return wName;
+            }
+        }
+    }
+
+    return L"VDS";
 }
 
 VdsRenderer::~VdsRenderer()
@@ -152,6 +268,11 @@ VdsRenderer::~VdsRenderer()
         m_vdsHandle = nullptr;
     }
     m_layout = nullptr;
+    if (m_wrappedStream)
+    {
+        m_wrappedStream->Release();
+        m_wrappedStream = nullptr;
+    }
     if (m_stream)
     {
         m_stream->Release();
@@ -164,6 +285,10 @@ bool VdsRenderer::Initialize(IStream* pStream)
     if (!pStream)
         return false;
 
+    std::vector<std::wstring> dbg;
+    wchar_t buf[256];
+    dbg.push_back(L"VdsRenderer::Initialize");
+
     // Clean up any previous state
     if (m_vdsHandle)
     {
@@ -172,25 +297,91 @@ bool VdsRenderer::Initialize(IStream* pStream)
         m_vdsHandle = nullptr;
     }
     m_layout = nullptr;
+    if (m_wrappedStream)
+    {
+        m_wrappedStream->Release();
+        m_wrappedStream = nullptr;
+    }
     if (m_stream)
     {
         m_stream->Release();
         m_stream = nullptr;
     }
 
+    // Keep a reference to the original stream
     m_stream = pStream;
     m_stream->AddRef();
 
-    // Open VDS using IStreamOpenOptions
-    OpenVDS::IStreamOpenOptions options(pStream);
-    OpenVDS::Error error;
-    m_vdsHandle = OpenVDS::Open(options, error);
+    // Create a GIT-wrapped stream for cross-thread access
+    // This allows OpenVDS worker threads to safely access the marshaled IStream
+    // from prevhost.exe (the preview handler surrogate process)
+    HRESULT hr = GITStreamWrapper::Create(pStream, &m_wrappedStream);
+    if (FAILED(hr) || !m_wrappedStream)
+    {
+        swprintf_s(buf, L"GIT wrapper failed: 0x%08X", hr);
+        dbg.push_back(buf);
+        LogToFile(dbg, m_logFilePath);
 
-    if (error.code != 0 || !m_vdsHandle)
+        // Fall back to using the original stream directly
+        // This works for thumbnails (explorer.exe, no marshaling)
+        dbg.push_back(L"Falling back to direct stream");
+        OpenVDS::IStreamOpenOptions options(pStream);
+        OpenVDS::Error error;
+        m_vdsHandle = OpenVDS::Open(options, error);
+    }
+    else
+    {
+        dbg.push_back(L"GIT wrapper created successfully");
+
+        // Open VDS using the GIT-wrapped stream
+        // Worker threads will get proper thread-local proxies from the GIT
+        OpenVDS::IStreamOpenOptions options(m_wrappedStream);
+        OpenVDS::Error error;
+        m_vdsHandle = OpenVDS::Open(options, error);
+
+        if (error.code != 0 || !m_vdsHandle)
+        {
+            swprintf_s(buf, L"OpenVDS failed with wrapped stream: %d", error.code);
+            dbg.push_back(buf);
+            wchar_t wMsg[256];
+            MultiByteToWideChar(CP_UTF8, 0, error.string.c_str(), -1, wMsg, 256);
+            dbg.push_back(wMsg);
+            LogToFile(dbg, m_logFilePath);
+            return false;
+        }
+    }
+
+    if (!m_vdsHandle)
+    {
+        dbg.push_back(L"Failed to open VDS");
+        LogToFile(dbg, m_logFilePath);
         return false;
+    }
 
     m_layout = OpenVDS::GetLayout(m_vdsHandle);
-    return (m_layout != nullptr);
+    if (!m_layout)
+    {
+        dbg.push_back(L"Failed to get layout");
+        LogToFile(dbg, m_logFilePath);
+        return false;
+    }
+
+    // Log success with dimension info
+    int dims = m_layout->GetDimensionality();
+    swprintf_s(buf, L"Opened %dD VDS successfully", dims);
+    dbg.push_back(buf);
+
+    std::wstring dimStr = L"Dims: ";
+    for (int i = 0; i < dims; i++)
+    {
+        if (i > 0) dimStr += L" x ";
+        swprintf_s(buf, L"%d", m_layout->GetDimensionNumSamples(i));
+        dimStr += buf;
+    }
+    dbg.push_back(dimStr);
+    LogToFile(dbg, m_logFilePath);
+
+    return true;
 }
 
 std::vector<std::wstring> VdsRenderer::GetMetadataLines() const
@@ -205,110 +396,147 @@ std::vector<std::wstring> VdsRenderer::GetMetadataLines() const
 
     wchar_t buf[256];
 
-    // Header
-    lines.push_back(L"OpenVDS File Information");
-    lines.push_back(L"========================");
-    lines.push_back(L"");
-
-    // Dimensionality
-    swprintf_s(buf, L"Dimensionality: %d", m_layout->GetDimensionality());
+    // Header with VDS name
+    std::wstring name = GetVdsName();
+    swprintf_s(buf, L"VDS: %s", name.c_str());
     lines.push_back(buf);
     lines.push_back(L"");
 
-    // Dimensions
-    lines.push_back(L"Dimensions:");
-    for (int dim = 0; dim < m_layout->GetDimensionality(); dim++)
+    // Dimensions - compact format
+    int dims = m_layout->GetDimensionality();
+    swprintf_s(buf, L"Dimensions: %dD", dims);
+    lines.push_back(buf);
+
+    for (int dim = 0; dim < dims; dim++)
     {
         auto axis = m_layout->GetAxisDescriptor(dim);
+        wchar_t axisName[32], unit[16];
+        MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, axisName, 32);
+        MultiByteToWideChar(CP_UTF8, 0, axis.GetUnit(), -1, unit, 16);
 
-        // Convert name and unit from char* to wstring
-        wchar_t name[64], unit[64];
-        MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, name, 64);
-        MultiByteToWideChar(CP_UTF8, 0, axis.GetUnit(), -1, unit, 64);
-
-        swprintf_s(buf, L"  [%d] %s:", dim, name);
-        lines.push_back(buf);
-
-        swprintf_s(buf, L"      Samples: %d", m_layout->GetDimensionNumSamples(dim));
-        lines.push_back(buf);
-
-        swprintf_s(buf, L"      Range: [%.2f, %.2f] %s",
-                   axis.GetCoordinateMin(), axis.GetCoordinateMax(), unit);
+        swprintf_s(buf, L"  %s: %d [%.1f..%.1f] %s",
+                   axisName,
+                   m_layout->GetDimensionNumSamples(dim),
+                   axis.GetCoordinateMin(),
+                   axis.GetCoordinateMax(),
+                   unit);
         lines.push_back(buf);
     }
     lines.push_back(L"");
 
-    // Channels
-    swprintf_s(buf, L"Channels: %d", m_layout->GetChannelCount());
+    // Channels - compact format
+    int chCount = m_layout->GetChannelCount();
+    swprintf_s(buf, L"Channels: %d", chCount);
     lines.push_back(buf);
-    for (int ch = 0; ch < m_layout->GetChannelCount(); ch++)
+
+    for (int ch = 0; ch < chCount && ch < 4; ch++)
     {
         auto channel = m_layout->GetChannelDescriptor(ch);
+        wchar_t chName[32];
+        MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, chName, 32);
 
-        wchar_t channelName[64];
-        MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, channelName, 64);
-
-        swprintf_s(buf, L"  [%d] %s", ch, channelName);
+        swprintf_s(buf, L"  %s [%.2e..%.2e]",
+                   chName,
+                   channel.GetValueRangeMin(),
+                   channel.GetValueRangeMax());
         lines.push_back(buf);
-
-        swprintf_s(buf, L"      Value range: [%.2e, %.2e]",
-                   channel.GetValueRangeMin(), channel.GetValueRangeMax());
+    }
+    if (chCount > 4)
+    {
+        swprintf_s(buf, L"  ... +%d more", chCount - 4);
         lines.push_back(buf);
     }
     lines.push_back(L"");
 
-    // Compression
+    // Compression - single line
     OpenVDS::CompressionMethod compression = OpenVDS::GetCompressionMethod(m_vdsHandle);
-    const wchar_t* compressionName = L"Unknown";
+    const wchar_t* compName = L"Unknown";
     switch (compression)
     {
-    case OpenVDS::CompressionMethod::None: compressionName = L"None"; break;
-    case OpenVDS::CompressionMethod::Wavelet: compressionName = L"Wavelet"; break;
-    case OpenVDS::CompressionMethod::RLE: compressionName = L"RLE"; break;
-    case OpenVDS::CompressionMethod::Zip: compressionName = L"Zip"; break;
-    case OpenVDS::CompressionMethod::WaveletLossless: compressionName = L"Wavelet Lossless"; break;
+    case OpenVDS::CompressionMethod::None: compName = L"None"; break;
+    case OpenVDS::CompressionMethod::Wavelet: compName = L"Wavelet"; break;
+    case OpenVDS::CompressionMethod::RLE: compName = L"RLE"; break;
+    case OpenVDS::CompressionMethod::Zip: compName = L"Zip"; break;
+    case OpenVDS::CompressionMethod::WaveletLossless: compName = L"Wavelet (Lossless)"; break;
     }
-
-    swprintf_s(buf, L"Compression: %s", compressionName);
-    lines.push_back(buf);
 
     if (compression == OpenVDS::CompressionMethod::Wavelet)
     {
         float tolerance = OpenVDS::GetCompressionTolerance(m_vdsHandle);
-        swprintf_s(buf, L"Tolerance: %.2f", tolerance);
-        lines.push_back(buf);
+        swprintf_s(buf, L"Compression: %s (tol: %.2f)", compName, tolerance);
     }
-    lines.push_back(L"");
+    else
+    {
+        swprintf_s(buf, L"Compression: %s", compName);
+    }
+    lines.push_back(buf);
 
-    // Brick size
+    // Brick size and LOD levels
     auto layoutDescriptor = m_layout->GetLayoutDescriptor();
     int brickSize = 1 << layoutDescriptor.GetBrickSize();
-    swprintf_s(buf, L"Brick size: %d", brickSize);
+    int lodLevels = static_cast<int>(layoutDescriptor.GetLODLevels());
+    swprintf_s(buf, L"Brick Size: %d, LOD Levels: %d", brickSize, lodLevels);
     lines.push_back(buf);
     lines.push_back(L"");
 
-    // Instructions
-    lines.push_back(L"Keyboard Shortcuts:");
-    lines.push_back(L"  V or Tab    - Toggle view mode");
-    lines.push_back(L"  ↑/↓         - Navigate slices or scroll");
-    lines.push_back(L"  PgUp/PgDn   - Fast navigation");
-    lines.push_back(L"  Mouse Wheel - Navigate or scroll");
-    lines.push_back(L"");
-    lines.push_back(L"Click in the preview to enable keyboard navigation");
+    // Dimension groups availability
+    lines.push_back(L"Dimension Groups:");
+    OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(m_vdsHandle);
+
+    struct DimGroupInfo {
+        OpenVDS::DimensionsND group;
+        const wchar_t* name;
+    };
+    DimGroupInfo groups[] = {
+        { OpenVDS::Dimensions_01, L"01" },
+        { OpenVDS::Dimensions_02, L"02" },
+        { OpenVDS::Dimensions_12, L"12" },
+        { OpenVDS::Dimensions_012, L"012" },
+        { OpenVDS::Dimensions_013, L"013" },
+        { OpenVDS::Dimensions_023, L"023" },
+        { OpenVDS::Dimensions_123, L"123" },
+    };
+
+    std::wstring availGroups;
+    for (const auto& dg : groups)
+    {
+        auto status = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
+        if (status == OpenVDS::VDSProduceStatus::Normal)
+        {
+            if (!availGroups.empty()) availGroups += L", ";
+            availGroups += dg.name;
+        }
+        else if (status == OpenVDS::VDSProduceStatus::Remapped)
+        {
+            if (!availGroups.empty()) availGroups += L", ";
+            availGroups += dg.name;
+            availGroups += L"(R)";
+        }
+    }
+    if (availGroups.empty())
+        availGroups = L"(none)";
+    swprintf_s(buf, L"  Available: %s", availGroups.c_str());
+    lines.push_back(buf);
 
     return lines;
 }
 
 int VdsRenderer::GetSliceCount(int dimension) const
 {
-    if (!m_layout || dimension < 0 || dimension >= m_layout->GetDimensionality())
+    if (!m_layout)
         return 0;
+    if (dimension < 0)
+        return 0;
+    // For dimensions beyond the data's dimensionality, return 1
+    // This allows 2D data to work with slice dimension 2 (returns 1 slice at index 0)
+    if (dimension >= m_layout->GetDimensionality())
+        return 1;
     return m_layout->GetDimensionNumSamples(dimension);
 }
 
 int VdsRenderer::GetDefaultSliceIndex(int dimension) const
 {
-    return GetSliceCount(dimension) / 2;
+    return GetSliceCount(dimension) / 2;            // will work even if that dimension is just 0 - 1
 }
 
 int VdsRenderer::GetDimensionality() const
@@ -345,6 +573,10 @@ void VdsRenderer::NormalizeToGrayscale(const float* source, uint8_t* dest,
 HBITMAP VdsRenderer::CreateColorizedBitmap(const uint8_t* grayscaleData,
                                            int width, int height)
 {
+    // Get a proper DC (important for surrogate processes like preview handlers)
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+
     // Create DIB section for 32-bit RGBA bitmap
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -355,8 +587,12 @@ HBITMAP VdsRenderer::CreateColorizedBitmap(const uint8_t* grayscaleData,
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pBits = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(nullptr, &bmi, DIB_RGB_COLORS,
+    HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS,
                                        &pBits, nullptr, 0);
+
+    DeleteDC(hdcMem);
+    ReleaseDC(nullptr, hdcScreen);
+
     if (!hBitmap)
         return nullptr;
 
@@ -407,7 +643,10 @@ static int SelectOptimalLOD(OpenVDS::VolumeDataAccessManager& accessManager,
 
     // Get available LOD count from layout descriptor
     int lodCount = static_cast<int>(layout->GetLayoutDescriptor().GetLODLevels());
-    if (lodCount == 0) lodCount = 1;  // At least LOD0
+    // Note: lodCount == 0 means this dimension group is unavailable
+    // Only proceed if lodCount > 0
+    if (lodCount == 0)
+        return 0;  // No LODs available for this dimension group
 
     int64_t sliceVoxels = static_cast<int64_t>(dim0Size) * dim1Size;
 
@@ -445,13 +684,15 @@ static int SelectOptimalLOD(OpenVDS::VolumeDataAccessManager& accessManager,
 }
 
 // Validate that the returned data looks reasonable
-// Returns true if data appears valid, false if it seems corrupted/empty
+// Returns statistics for color mapping
 struct DataValidationResult
 {
     bool isValid;
     float minVal;
     float maxVal;
-    int invalidCount;   // NaN + Inf count
+    float mean;
+    float stdDev;
+    int invalidCount;   // NaN + Inf + extreme magnitude count
     int totalCount;
     std::wstring errorMessage;
 };
@@ -470,14 +711,17 @@ static DataValidationResult ValidateSliceData(const float* data, size_t count)
     if (!data || count == 0)
     {
         result.isValid = true;  // Don't fail, just note it
+        result.mean = 0.0f;
+        result.stdDev = 1.0f;
         result.errorMessage = L"Warning: No data returned";
         return result;
     }
 
-    // First pass: count invalid values and find initial valid value
-    // Invalid = NaN, Inf, or magnitude > 1e30
+    // Use RunningStat for numerically stable mean/variance calculation
+    RunningStat stats;
     int invalidCount = 0;
-    float firstValidValue = 0.0f;
+    float minVal = 0.0f;
+    float maxVal = 0.0f;
     bool foundValid = false;
 
     for (size_t i = 0; i < count; i++)
@@ -487,14 +731,25 @@ static DataValidationResult ValidateSliceData(const float* data, size_t count)
         {
             invalidCount++;
         }
-        else if (!foundValid)
+        else
         {
-            firstValidValue = v;
-            foundValid = true;
+            stats.Push(v);
+            if (!foundValid)
+            {
+                minVal = maxVal = v;
+                foundValid = true;
+            }
+            else
+            {
+                if (v < minVal) minVal = v;
+                if (v > maxVal) maxVal = v;
+            }
         }
     }
 
     result.invalidCount = invalidCount;
+    result.minVal = minVal;
+    result.maxVal = maxVal;
 
     // Check if too many invalid values (warning only, don't fail)
     float invalidRatio = static_cast<float>(invalidCount) / count;
@@ -506,41 +761,31 @@ static DataValidationResult ValidateSliceData(const float* data, size_t count)
         // Continue anyway - don't fail
     }
 
-    if (!foundValid)
+    if (!foundValid || stats.NumDataValues() == 0)
     {
         // No valid values - use defaults
         result.minVal = 0.0f;
         result.maxVal = 1.0f;
+        result.mean = 0.0f;
+        result.stdDev = 1.0f;
         result.isValid = true;  // Don't fail, let rendering continue with defaults
         if (result.errorMessage.empty())
             result.errorMessage = L"Warning: No valid data values found, using defaults";
         return result;
     }
 
-    // Second pass: compute min/max (only from valid values)
-    result.minVal = firstValidValue;
-    result.maxVal = firstValidValue;
+    // Get statistics from running stats
+    result.mean = static_cast<float>(stats.Mean());
+    result.stdDev = static_cast<float>(stats.StandardDeviation());
 
-    for (size_t i = 0; i < count; i++)
+    // Ensure stdDev is not zero (would cause division by zero)
+    if (result.stdDev < MIN_VALUE_VARIANCE)
     {
-        float v = data[i];
-        if (IsValidRenderValue(v))
-        {
-            if (v < result.minVal) result.minVal = v;
-            if (v > result.maxVal) result.maxVal = v;
-        }
-    }
-
-    // Check if data has any variance (warning only, don't fail)
-    float range = result.maxVal - result.minVal;
-    if (range < MIN_VALUE_VARIANCE)
-    {
-        // Low variance - just warn, don't fail validation
+        result.stdDev = 1.0f;
         wchar_t buf[128];
-        swprintf_s(buf, L"Warning: Data has low variance (all values ~%.2e)", result.minVal);
+        swprintf_s(buf, L"Warning: Data has low variance (all values ~%.2e)", result.mean);
         if (result.errorMessage.empty())
             result.errorMessage = buf;
-        // Still mark as valid so rendering continues
     }
 
     result.isValid = true;
@@ -610,196 +855,148 @@ static HBITMAP ScaleBitmap(HBITMAP hSource, int maxSize)
     return hDest ? hDest : hSource;
 }
 
-HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
+HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSize)
 {
     std::vector<std::wstring> dbg;  // Debug info for error bitmap
+    m_lastRenderDebugMessages.clear();
 
     if (!m_vdsHandle || !m_layout)
     {
         dbg.push_back(L"VDS Error");
         dbg.push_back(L"Handle or layout is null");
-        return CreateDebugBitmap(256, 256, dbg);
+        m_lastRenderDebugMessages = std::move(dbg);
+        return CreateDebugBitmap(256, 256, m_lastRenderDebugMessages);
     }
 
     int dimensionality = m_layout->GetDimensionality();
 
-    // For 2D data, render the entire dataset (ignore dimension/sliceIndex)
-    if (dimensionality == 2)
-    {
-        return Render2D(maxSize);
-    }
-
-    // For 3D/4D data, validate dimension and slice index
-    if (dimension < 0 || dimension >= dimensionality)
-    {
-        dbg.push_back(L"VDS Error");
-        wchar_t buf[64];
-        swprintf_s(buf, L"Invalid dimension: %d", dimension);
-        dbg.push_back(buf);
-        return CreateDebugBitmap(256, 256, dbg);
-    }
-
-    if (sliceIndex < 0 || sliceIndex >= GetSliceCount(dimension))
+    // Validate slice index (GetSliceCount returns 1 for non-existent dimensions,
+    // so 2D data with sliceOnDimension=2 and sliceIndex=0 is valid)
+    int sliceCount = GetSliceCount(sliceOnDimension);
+    if (sliceIndex < 0 || sliceIndex >= sliceCount)
     {
         dbg.push_back(L"VDS Error");
         wchar_t buf[64];
         swprintf_s(buf, L"Invalid slice: %d", sliceIndex);
         dbg.push_back(buf);
-        return CreateDebugBitmap(256, 256, dbg);
+        m_lastRenderDebugMessages = std::move(dbg);
+        return CreateDebugBitmap(256, 256, m_lastRenderDebugMessages);
     }
 
-    // Add detailed debug info
-    wchar_t buf[128];
-    dbg.push_back(L"=== VDS Information ===");
-    swprintf_s(buf, L"Dimensionality: %d", dimensionality);
+    // Build compact debug info
+    wchar_t buf[256];
+    std::wstring vdsName = GetVdsName();
+    swprintf_s(buf, L"%s (%dD)", vdsName.c_str(), dimensionality);
     dbg.push_back(buf);
-    dbg.push_back(L"");
-    dbg.push_back(L"Dimensions:");
-    for (int d = 0; d < dimensionality; d++)
-    {
-        auto axis = m_layout->GetAxisDescriptor(d);
-        wchar_t name[64], unit[32];
-        MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, name, 64);
-        MultiByteToWideChar(CP_UTF8, 0, axis.GetUnit(), -1, unit, 32);
-        swprintf_s(buf, L"[%d] %s: %d [%.1f-%.1f] %s",
-                   d, name, m_layout->GetDimensionNumSamples(d),
-                   axis.GetCoordinateMin(), axis.GetCoordinateMax(), unit);
-        dbg.push_back(buf);
-    }
-    dbg.push_back(L"");
-    swprintf_s(buf, L"Channels: %d", m_layout->GetChannelCount());
-    dbg.push_back(buf);
-    for (int ch = 0; ch < m_layout->GetChannelCount(); ch++)
-    {
-        auto channel = m_layout->GetChannelDescriptor(ch);
-        wchar_t chName[64];
-        MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, chName, 64);
-        swprintf_s(buf, L"[%d] %s: [%.2e, %.2e]",
-                   ch, chName, channel.GetValueRangeMin(), channel.GetValueRangeMax());
-        dbg.push_back(buf);
-    }
-    dbg.push_back(L"");
 
     try
     {
         // Get access manager
         OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(m_vdsHandle);
 
+        // Build compact dimension summary
+        std::wstring dimStr = L"Dims: ";
+        for (int dim = 0; dim < dimensionality; dim++)
+        {
+            if (dim > 0) dimStr += L" x ";
+            swprintf_s(buf, L"%d", m_layout->GetDimensionNumSamples(dim));
+            dimStr += buf;
+        }
+        dbg.push_back(dimStr);
+
         // Set up voxel bounds
+        // Always display dim0 × dim1, slice on dim2+ (if they exist)
         int voxelMin[OpenVDS::Dimensionality_Max] = { 0, 0, 0, 0, 0, 0 };
         int voxelMax[OpenVDS::Dimensionality_Max] = { 1, 1, 1, 1, 1, 1 };
 
-        // Collect the dimensions that are NOT the slice dimension
-        int displayDims[OpenVDS::Dimensionality_Max - 1];
-        int displayDimCount = 0;
+        // Display dimensions are always dim0 and dim1
+        int dim0 = 0;
+        int dim1 = 1;
+        int dim0Size = m_layout->GetDimensionNumSamples(0);
+        int dim1Size = m_layout->GetDimensionNumSamples(1);
 
-        for (int dim = 0; dim < dimensionality; dim++)
+        // Full extent for display dimensions
+        voxelMin[0] = 0;
+        voxelMax[0] = dim0Size;
+        voxelMin[1] = 0;
+        voxelMax[1] = dim1Size;
+
+        // For dimensions 2 and above, fix at sliceIndex (or midpoint for dim3+)
+        // sliceOnDimension parameter is used for dim2, sliceIndex selects which slice
+        if (dimensionality >= 3)
         {
-            if (dim == dimension)
-            {
-                // This is the slice dimension - fix at sliceIndex
-                voxelMin[dim] = sliceIndex;
-                voxelMax[dim] = sliceIndex + 1;
-            }
-            else
-            {
-                voxelMin[dim] = 0;
-                voxelMax[dim] = m_layout->GetDimensionNumSamples(dim);
-                displayDims[displayDimCount++] = dim;
-            }
+            // Dim2 is the primary slice dimension
+            voxelMin[2] = sliceIndex;
+            voxelMax[2] = sliceIndex + 1;
         }
-
-        // For 4D data, fix the third display dimension at midpoint
-        // We only display 2 dimensions at a time
-        if (displayDimCount > 2)
+        if (dimensionality >= 4)
         {
-            int dim = displayDims[2];
-            int midpoint = m_layout->GetDimensionNumSamples(dim) / 2;
-            voxelMin[dim] = midpoint;
-            voxelMax[dim] = midpoint + 1;
+            // Dim3+ fixed at midpoint
+            for (int dim = 3; dim < dimensionality; dim++)
+            {
+                int midpoint = m_layout->GetDimensionNumSamples(dim) / 2;
+                voxelMin[dim] = midpoint;
+                voxelMax[dim] = midpoint + 1;
+            }
         }
 
         // VDS dimension conventions:
+        // 2D poststack: dim0=Sample, dim1=CDP
         // 3D poststack: dim0=Sample, dim1=Crossline, dim2=Inline
         // 4D prestack:  dim0=Sample, dim1=Offset, dim2=Crossline, dim3=Inline
         //
-        // For display:
-        // - If Sample (dim0) is one of the display dimensions, it should be Y (vertical)
-        // - The other dimension becomes X (horizontal)
-        // - If Sample is sliced (time/depth slice), lower dim = X, higher dim = Y
-
-        int dim0 = displayDims[0];  // First display dimension (lower index)
-        int dim1 = displayDims[1];  // Second display dimension (higher index)
-
-        int dim0Size = m_layout->GetDimensionNumSamples(dim0);
-        int dim1Size = m_layout->GetDimensionNumSamples(dim1);
+        // Display: dim0 (Sample) is Y-axis (vertical), dim1 is X-axis (horizontal)
+        // Slice on dim2 (Inline for 3D)
 
         // OpenVDS returns data with dim0 as fastest-varying
         // buffer layout: buffer[dim1_idx * dim0Size + dim0_idx]
+        //
+        // For display: dim0 (Sample) should be vertical (Y), dim1 should be horizontal (X)
+        // This requires transposing the buffer when creating the bitmap
+        int width = dim1Size;
+        int height = dim0Size;
 
-        // Determine if we need to transpose for display
-        // If dim0 == 0 (Sample dimension), Sample should be Y-axis (vertical)
-        // This requires transposing: X = dim1, Y = dim0
-        bool needsTranspose = (dim0 == 0);
-
-        int width, height;
-        if (needsTranspose)
-        {
-            // Sample (dim0) is vertical (Y), other dim (dim1) is horizontal (X)
-            width = dim1Size;
-            height = dim0Size;
-        }
-        else
-        {
-            // Time/depth slice - dim0 is X, dim1 is Y
-            width = dim0Size;
-            height = dim1Size;
-        }
-
-        // Allocate buffer for VDS data
+        // Allocate buffer for slice data
         std::vector<float> buffer(dim0Size * dim1Size);
 
-        // Find an available dimension group
-        OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
-        const wchar_t* dimGroupName = L"Dimensions_012";
-        OpenVDS::DimensionsND candidates[] = {
-            OpenVDS::Dimensions_01,
-            OpenVDS::Dimensions_012,
-            OpenVDS::Dimensions_02
+        // Find available dimension groups
+        struct DimGroupInfo {
+            OpenVDS::DimensionsND group;
+            const wchar_t* name;
         };
-        const wchar_t* candidateNames[] = {
-            L"Dimensions_01",
-            L"Dimensions_012",
-            L"Dimensions_02"
+        DimGroupInfo allGroups[] = {
+            { OpenVDS::Dimensions_01, L"01" },
+            { OpenVDS::Dimensions_02, L"02" },
+            { OpenVDS::Dimensions_12, L"12" },
+            { OpenVDS::Dimensions_012, L"012" },
         };
+        OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_01;
 
-        for (int i = 0; i < 3; i++)
+        for (const auto& dg : allGroups)
         {
-            auto status = accessManager.GetVDSProduceStatus(candidates[i], 0, 0);
-            if (status != OpenVDS::VDSProduceStatus::Unavailable)
+            auto status = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
+            if (status == OpenVDS::VDSProduceStatus::Normal)
             {
-                dimGroup = candidates[i];
-                dimGroupName = candidateNames[i];
+                dimGroup = dg.group;
                 break;
             }
         }
 
-        // Select optimal LOD based on slice size and target thumbnail size
-        // Higher LOD = faster render (10-100x speedup for large datasets)
-        int selectedLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
-                                           dim0Size, dim1Size, maxSize);
-
-        swprintf_s(buf, L"DimGroup: %s, LOD: %d", dimGroupName, selectedLOD);
-        dbg.push_back(buf);
-        swprintf_s(buf, L"voxelMin: [%d,%d,%d,%d]",
-                   voxelMin[0], voxelMin[1], voxelMin[2], voxelMin[3]);
-        dbg.push_back(buf);
-        swprintf_s(buf, L"voxelMax: [%d,%d,%d,%d]",
-                   voxelMax[0], voxelMax[1], voxelMax[2], voxelMax[3]);
-        dbg.push_back(buf);
-        dbg.push_back(L"");
+        // Select LOD (prefer LOD0 for quality)
+        int lodCount = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels());
+        int selectedLOD = 0;
+        for (int lod = 0; lod < lodCount; lod++)
+        {
+            if (accessManager.GetVDSProduceStatus(dimGroup, lod, 0) == OpenVDS::VDSProduceStatus::Normal)
+            {
+                selectedLOD = lod;
+                break;
+            }
+        }
 
         // Request the slice using selected LOD
+        // The GIT-wrapped stream allows OpenVDS worker threads to access the
+        // marshaled IStream from prevhost.exe safely
         auto request = accessManager.RequestVolumeSubset<float>(
             buffer.data(),
             buffer.size() * sizeof(float),
@@ -810,338 +1007,104 @@ HBITMAP VdsRenderer::RenderSlice(int dimension, int sliceIndex, int maxSize)
 
         if (!request->WaitForCompletion())
         {
-            dbg.push_back(L"=== ERROR ===");
-            swprintf_s(buf, L"Error code: %d", request->GetErrorCode());
+            swprintf_s(buf, L"VDS request failed: %d", request->GetErrorCode());
             dbg.push_back(buf);
-
             std::string errMsg = request->GetErrorMessage();
             wchar_t wErrMsg[256];
             MultiByteToWideChar(CP_UTF8, 0, errMsg.c_str(), -1, wErrMsg, 256);
             dbg.push_back(wErrMsg);
-
-            LogToFile(dbg);
-            return CreateDebugBitmap(256, 256, dbg);
+            LogToFile(dbg, m_logFilePath);
+            m_lastRenderDebugMessages = std::move(dbg);
+            return CreateDebugBitmap(256, 256, m_lastRenderDebugMessages);
         }
 
-        // Validate the returned data
-        DataValidationResult validation = ValidateSliceData(buffer.data(), buffer.size());
+        const float* bufferPtr = buffer.data();
 
-        swprintf_s(buf, L"Data validation: %s", validation.isValid ? L"PASSED" : L"FAILED");
-        dbg.push_back(buf);
-        swprintf_s(buf, L"Data range: [%.3e, %.3e]", validation.minVal, validation.maxVal);
-        dbg.push_back(buf);
-        swprintf_s(buf, L"Invalid values: %d/%d (%.1f%%)",
-                   validation.invalidCount, validation.totalCount,
-                   validation.totalCount > 0 ? 100.0f * validation.invalidCount / validation.totalCount : 0.0f);
-        dbg.push_back(buf);
-
-        if (!validation.errorMessage.empty())
+        // Add slice info to debug
+        if (dimensionality >= 3)
         {
-            dbg.push_back(validation.errorMessage.c_str());
+            const wchar_t* dimName = GetDimensionName(2);
+            swprintf_s(buf, L"Slice: %s %d/%d", dimName, sliceIndex + 1, m_layout->GetDimensionNumSamples(2));
+            dbg.push_back(buf);
         }
+        swprintf_s(buf, L"Output: %d x %d", width, height);
+        dbg.push_back(buf);
 
-        // Log all debug info to file
-        LogToFile(dbg);
-
-        // Use validated min/max for normalization (even if validation had warnings)
-        float minVal = validation.minVal;
-        float maxVal = validation.maxVal;
-
-        // Fallback to channel metadata if data range is still degenerate
-        if (maxVal - minVal < 1e-6f)
+        // Quick min/max/mean of buffer data
+        float rawMin = bufferPtr[0], rawMax = bufferPtr[0];
+        double rawSum = 0.0;
+        size_t bufferSize = static_cast<size_t>(dim0Size) * dim1Size;
+        for (size_t i = 0; i < bufferSize; i++)
         {
-            minVal = m_layout->GetChannelValueRangeMin(0);
-            maxVal = m_layout->GetChannelValueRangeMax(0);
+            float v = bufferPtr[i];
+            if (v < rawMin) rawMin = v;
+            if (v > rawMax) rawMax = v;
+            rawSum += v;
         }
+        float rawMean = static_cast<float>(rawSum / bufferSize);
+        swprintf_s(buf, L"Raw: min=%.2e max=%.2e mean=%.2e", rawMin, rawMax, rawMean);
+        dbg.push_back(buf);
+
+        // Validate and compute statistics
+        DataValidationResult validation = ValidateSliceData(bufferPtr, bufferSize);
+
+        // Log to file
+        LogToFile(dbg, m_logFilePath);
+
+        // Use mean/stddev for normalization (produces better contrast for seismic data)
+        float histoMean = SCALE_AROUND_MEAN ? validation.mean : 0.0f;
+        float invScaling = TRANSFER_FUNCTION_GAIN * validation.stdDev;
+        if (invScaling < 1e-6f) invScaling = 1.0f;
 
         // Create grayscale buffer with proper layout for bitmap
+        // Transpose: bitmap(x,y) where x is dim1 (horizontal), y is dim0/Sample (vertical)
         std::vector<uint8_t> grayscale(width * height);
-        float range = maxVal - minVal;
-        if (range < 1e-6f) range = 1.0f;
 
-        if (needsTranspose)
+        for (int y = 0; y < height; y++)      // y iterates over dim0 (Sample)
         {
-            // Transpose: bitmap(x,y) comes from buffer(y, x) where x is dim1, y is dim0
-            for (int y = 0; y < height; y++)      // y iterates over dim0 (Sample)
+            for (int x = 0; x < width; x++)   // x iterates over dim1
             {
-                for (int x = 0; x < width; x++)   // x iterates over dim1
-                {
-                    float v = buffer[x * dim0Size + y];  // buffer[dim1_idx * dim0Size + dim0_idx]
-                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
-                    float normalized = (v - minVal) / range;
-                    normalized = std::max(0.0f, std::min(1.0f, normalized));
-                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
-                }
-            }
-        }
-        else
-        {
-            // No transpose needed: bitmap(x,y) comes from buffer(y, x) directly
-            for (int y = 0; y < height; y++)      // y iterates over dim1
-            {
-                for (int x = 0; x < width; x++)   // x iterates over dim0
-                {
-                    float v = buffer[y * dim0Size + x];  // buffer[dim1_idx * dim0Size + dim0_idx]
-                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
-                    float normalized = (v - minVal) / range;
-                    normalized = std::max(0.0f, std::min(1.0f, normalized));
-                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
-                }
+                float v = bufferPtr[x * dim0Size + y];  // buffer[dim1_idx * dim0Size + dim0_idx]
+                if (!IsValidRenderValue(v)) v = histoMean;  // Filter NaN/Inf/extreme values
+                // Map to 0-255: center at 128, scale by stddev
+                float val = 128.0f + (v - histoMean) * 128.0f / invScaling;
+                val = std::max(0.0f, std::min(255.0f, val));
+                grayscale[y * width + x] = static_cast<uint8_t>(val);
             }
         }
 
         // Create colorized bitmap and scale to requested size
         HBITMAP hBitmap = CreateColorizedBitmap(grayscale.data(), width, height);
-        return ScaleBitmap(hBitmap, maxSize);
-    }
-    catch (const std::exception& e)
-    {
-        dbg.push_back(L"=== EXCEPTION ===");
-        wchar_t wMsg[256];
-        MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 256);
-        dbg.push_back(wMsg);
-        LogToFile(dbg);
-        return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, dbg);
-    }
-    catch (...)
-    {
-        dbg.push_back(L"=== EXCEPTION ===");
-        dbg.push_back(L"Unknown exception");
-        LogToFile(dbg);
-        return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, dbg);
-    }
-}
 
-HBITMAP VdsRenderer::Render2D(int maxSize)
-{
-    std::vector<std::wstring> dbg;  // Debug info for error bitmap
-
-    if (!m_vdsHandle || !m_layout)
-    {
-        dbg.push_back(L"VDS Error");
-        dbg.push_back(L"Handle or layout is null");
-        return CreateDebugBitmap(256, 256, dbg);
-    }
-
-    // Add detailed debug info
-    wchar_t buf[128];
-    swprintf_s(buf, L"Dimensionality: %d", m_layout->GetDimensionality());
-    dbg.push_back(buf);
-
-    for (int d = 0; d < m_layout->GetDimensionality(); d++)
-    {
-        auto axis = m_layout->GetAxisDescriptor(d);
-        wchar_t name[64];
-        MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, name, 64);
-        swprintf_s(buf, L"  [%d] %s: %d samples", d, name, m_layout->GetDimensionNumSamples(d));
-        dbg.push_back(buf);
-    }
-
-    try
-    {
-        OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(m_vdsHandle);
-
-        int voxelMin[OpenVDS::Dimensionality_Max] = { 0, 0, 0, 0, 0, 0 };
-        int voxelMax[OpenVDS::Dimensionality_Max] = { 1, 1, 1, 1, 1, 1 };
-
-        // For 2D data, use all of dimensions 0 and 1
-        voxelMin[0] = 0;
-        voxelMax[0] = m_layout->GetDimensionNumSamples(0);
-        voxelMin[1] = 0;
-        voxelMax[1] = m_layout->GetDimensionNumSamples(1);
-
-        int dim0Size = m_layout->GetDimensionNumSamples(0);
-        int dim1Size = m_layout->GetDimensionNumSamples(1);
-
-        swprintf_s(buf, L"Display: dim0 x dim1 (%dx%d)", dim0Size, dim1Size);
-        dbg.push_back(buf);
-
-        // Check if this looks like seismic data with Sample as dim0
-        bool needsTranspose = false;
-        auto axis0 = m_layout->GetAxisDescriptor(0);
-        const char* axis0Name = axis0.GetName();
-        if (axis0Name)
+        // Save debug bitmap to temp folder
+        if (hBitmap)
         {
-            std::string name(axis0Name);
-            for (auto& c : name) c = std::tolower(c);
-            if (name.find("sample") != std::string::npos ||
-                name.find("time") != std::string::npos ||
-                name.find("depth") != std::string::npos ||
-                name.find("z") != std::string::npos)
-            {
-                needsTranspose = true;
-            }
-        }
-
-        int width, height;
-        if (needsTranspose)
-        {
-            width = dim1Size;
-            height = dim0Size;
-            swprintf_s(buf, L"Transpose: YES (%dx%d)", width, height);
-        }
-        else
-        {
-            width = dim0Size;
-            height = dim1Size;
-            swprintf_s(buf, L"Transpose: NO (%dx%d)", width, height);
-        }
-        dbg.push_back(buf);
-
-        std::vector<float> buffer(dim0Size * dim1Size);
-
-        // Find an available dimension group
-        OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
-        const wchar_t* dimGroupName = L"Dimensions_012";
-
-        OpenVDS::DimensionsND candidates[] = {
-            OpenVDS::Dimensions_01,
-            OpenVDS::Dimensions_012,
-            OpenVDS::Dimensions_02
-        };
-        const wchar_t* candidateNames[] = {
-            L"Dimensions_01",
-            L"Dimensions_012",
-            L"Dimensions_02"
-        };
-
-        for (int i = 0; i < 3; i++)
-        {
-            auto status = accessManager.GetVDSProduceStatus(candidates[i], 0, 0);
-            if (status != OpenVDS::VDSProduceStatus::Unavailable)
-            {
-                dimGroup = candidates[i];
-                dimGroupName = candidateNames[i];
-                break;
-            }
-        }
-
-        // Select optimal LOD based on slice size and target thumbnail size
-        // Higher LOD = faster render (10-100x speedup for large 2D datasets)
-        int selectedLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
-                                           dim0Size, dim1Size, maxSize);
-
-        swprintf_s(buf, L"DimGroup: %s, LOD: %d", dimGroupName, selectedLOD);
-        dbg.push_back(buf);
-
-        auto request = accessManager.RequestVolumeSubset<float>(
-            buffer.data(),
-            buffer.size() * sizeof(float),
-            dimGroup,
-            selectedLOD, 0,  // Selected LOD, channel 0
-            voxelMin, voxelMax
-        );
-
-        if (!request->WaitForCompletion())
-        {
-            dbg.push_back(L"");
-            dbg.push_back(L"ERROR: Request failed!");
-            swprintf_s(buf, L"Code: %d", request->GetErrorCode());
+            std::string debugBmpPath = GetLogFilePath("openvds-preview-slice.bmp");
+            SaveBitmapToFile(hBitmap, debugBmpPath.c_str());
+            swprintf_s(buf, L"Saved: %S", debugBmpPath.c_str());
             dbg.push_back(buf);
-
-            std::string errMsg = request->GetErrorMessage();
-            wchar_t wErrMsg[256];
-            MultiByteToWideChar(CP_UTF8, 0, errMsg.c_str(), -1, wErrMsg, 256);
-            // Split long error messages
-            if (errMsg.length() > 40)
-            {
-                swprintf_s(buf, L"Msg: %.40s", wErrMsg);
-                dbg.push_back(buf);
-            }
-            else
-            {
-                swprintf_s(buf, L"Msg: %s", wErrMsg);
-                dbg.push_back(buf);
-            }
-
-            LogToFile(dbg);
-            return CreateDebugBitmap(256, 256, dbg);
-        }
-        dbg.push_back(L"Request: OK");
-
-        // Validate the returned data
-        DataValidationResult validation = ValidateSliceData(buffer.data(), buffer.size());
-
-        swprintf_s(buf, L"Data validation: %s", validation.isValid ? L"PASSED" : L"FAILED");
-        dbg.push_back(buf);
-        swprintf_s(buf, L"Data range: [%.3e, %.3e]", validation.minVal, validation.maxVal);
-        dbg.push_back(buf);
-        swprintf_s(buf, L"Invalid values: %d/%d (%.1f%%)",
-                   validation.invalidCount, validation.totalCount,
-                   validation.totalCount > 0 ? 100.0f * validation.invalidCount / validation.totalCount : 0.0f);
-        dbg.push_back(buf);
-
-        if (!validation.errorMessage.empty())
-        {
-            dbg.push_back(validation.errorMessage.c_str());
         }
 
-        // Log all debug info to file
-        LogToFile(dbg);
+        // Store debug messages for preview handler to display
+        m_lastRenderDebugMessages = std::move(dbg);
 
-        // Use validated min/max for normalization (even if validation had warnings)
-        float minVal = validation.minVal;
-        float maxVal = validation.maxVal;
-
-        // Fallback to channel metadata if data range is still degenerate
-        if (maxVal - minVal < 1e-6f)
-        {
-            minVal = m_layout->GetChannelValueRangeMin(0);
-            maxVal = m_layout->GetChannelValueRangeMax(0);
-        }
-
-        // Create grayscale buffer with proper layout
-        std::vector<uint8_t> grayscale(width * height);
-        float range = maxVal - minVal;
-        if (range < 1e-6f) range = 1.0f;
-
-        if (needsTranspose)
-        {
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    float v = buffer[x * dim0Size + y];
-                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
-                    float normalized = (v - minVal) / range;
-                    normalized = std::max(0.0f, std::min(1.0f, normalized));
-                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
-                }
-            }
-        }
-        else
-        {
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    float v = buffer[y * dim0Size + x];
-                    if (!IsValidRenderValue(v)) v = minVal;  // Filter NaN/Inf/extreme values
-                    float normalized = (v - minVal) / range;
-                    normalized = std::max(0.0f, std::min(1.0f, normalized));
-                    grayscale[y * width + x] = static_cast<uint8_t>(normalized * 255.0f);
-                }
-            }
-        }
-
-        HBITMAP hBitmap = CreateColorizedBitmap(grayscale.data(), width, height);
         return ScaleBitmap(hBitmap, maxSize);
     }
     catch (const std::exception& e)
     {
-        dbg.push_back(L"");
-        dbg.push_back(L"EXCEPTION:");
+        dbg.push_back(L"EXCEPTION");
         wchar_t wMsg[256];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 256);
         dbg.push_back(wMsg);
-        LogToFile(dbg);
-        return CreateDebugBitmap(256, 256, dbg);
+        LogToFile(dbg, m_logFilePath);
+        m_lastRenderDebugMessages = std::move(dbg);
+        return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, m_lastRenderDebugMessages);
     }
     catch (...)
     {
-        dbg.push_back(L"");
-        dbg.push_back(L"UNKNOWN EXCEPTION");
-        LogToFile(dbg);
-        return CreateDebugBitmap(256, 256, dbg);
+        dbg.push_back(L"EXCEPTION: Unknown");
+        LogToFile(dbg, m_logFilePath);
+        m_lastRenderDebugMessages = std::move(dbg);
+        return CreateDebugBitmap(maxSize > 0 ? maxSize : 256, maxSize > 0 ? maxSize : 256, m_lastRenderDebugMessages);
     }
 }

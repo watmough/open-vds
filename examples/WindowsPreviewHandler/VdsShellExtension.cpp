@@ -18,13 +18,17 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
 #include <shlwapi.h>
 #include <thumbcache.h>
 #include <propsys.h>
 
 #include "VdsRenderer.h"
+#include <cstdarg>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #pragma comment(lib, "shlwapi.lib")
 
@@ -46,6 +50,23 @@ static const CLSID CLSID_VdsPreviewHandler =
 
 HINSTANCE g_hInstance = nullptr;
 LONG g_dllRefCount = 0;
+
+// ============================================================================
+// Log file path helper
+// ============================================================================
+
+// Build log file path in %USERPROFILE%\AppData\LocalLow\Temp
+static std::string GetLogFilePath(const char* filename)
+{
+    char expandedPath[MAX_PATH];
+    DWORD result = ExpandEnvironmentStringsA("%USERPROFILE%\\AppData\\LocalLow\\Temp\\", expandedPath, MAX_PATH);
+    if (result == 0 || result > MAX_PATH)
+    {
+        // Fallback to temp directory
+        return std::string("c:\\temp\\") + filename;
+    }
+    return std::string(expandedPath) + filename;
+}
 
 // ============================================================================
 // Helper macros
@@ -127,9 +148,9 @@ public:
                 return E_FAIL;
 
             // Render middle slice of the first dimension
-            int dimension = (renderer.GetDimensionality() >= 3) ? 2 : 0;  // Prefer depth/time slice for 3D
-            int sliceIndex = renderer.GetDefaultSliceIndex(dimension);
-            HBITMAP hBitmap = renderer.RenderSlice(dimension, sliceIndex, cx);
+            int sliceOnDimension = renderer.GetDimensionality() - 1;
+            int sliceIndex = renderer.GetDefaultSliceIndex(sliceOnDimension);
+            HBITMAP hBitmap = renderer.RenderSlice(sliceOnDimension, sliceIndex, cx);
 
             if (!hBitmap)
                 return E_FAIL;
@@ -137,8 +158,9 @@ public:
             *phbmp = hBitmap;
             return S_OK;
         }
-        catch (...)
+        catch (const std::exception& e)
         {
+            // LogPreview("Exception whilst rendering thumbnail.");
             return E_FAIL;
         }
     }
@@ -151,6 +173,105 @@ private:
 // ============================================================================
 // VdsPreviewHandler
 // ============================================================================
+
+// Debug message storage for on-screen display and file logging
+static std::vector<std::string> g_debugMessages;
+static const size_t MAX_DEBUG_MESSAGES = 100;
+static int g_debugScrollOffset = 0;
+
+// Log to both on-screen display and preview log file
+static void LogPreview(const char* message)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char buffer[512];
+    snprintf(buffer, sizeof(buffer), "[%02d:%02d:%02d] %s",
+             st.wHour, st.wMinute, st.wSecond, message);
+
+    // Add to on-screen display
+    g_debugMessages.push_back(buffer);
+    if (g_debugMessages.size() > MAX_DEBUG_MESSAGES)
+        g_debugMessages.erase(g_debugMessages.begin());
+
+    // Also write to log file
+    std::string logPath = GetLogFilePath("openvds-previewpane.log");
+    std::ofstream logFile(logPath, std::ios::app);
+    if (logFile.is_open())
+    {
+        char timestamp[64];
+        snprintf(timestamp, sizeof(timestamp), "[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        logFile << timestamp << message << "\n";
+        logFile.flush();
+    }
+}
+
+static void LogPreviewFmt(const char* format, ...)
+{
+    char buffer[512];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    LogPreview(buffer);
+}
+
+// Draw debug messages on screen (scrollable)
+static void DrawDebugMessages(HDC hdc, RECT rc, COLORREF textColor)
+{
+    ::SetTextColor(hdc, textColor);
+    ::SetBkMode(hdc, TRANSPARENT);
+
+    HFONT hFont = CreateFontA(-11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+    // Header
+    RECT headerRect = { rc.left + 8, rc.top + 6, rc.right - 8, rc.top + 20 };
+    ::SetTextColor(hdc, RGB(60, 60, 120));
+    DrawTextA(hdc, "Debug Log", -1, &headerRect, DT_LEFT | DT_SINGLELINE);
+    ::SetTextColor(hdc, textColor);
+
+    if (g_debugMessages.empty())
+    {
+        RECT emptyRect = { rc.left + 8, rc.top + 24, rc.right - 8, rc.bottom };
+        DrawTextA(hdc, "(no messages)", -1, &emptyRect, DT_LEFT | DT_SINGLELINE);
+        SelectObject(hdc, hOldFont);
+        DeleteObject(hFont);
+        return;
+    }
+
+    int lineHeight = 13;
+    int contentTop = rc.top + 24;
+    int contentBottom = rc.bottom - 22;
+    int maxLines = (contentBottom - contentTop) / lineHeight;
+
+    int startIdx = g_debugScrollOffset;
+    if (startIdx < 0) startIdx = 0;
+    if (startIdx >= (int)g_debugMessages.size()) startIdx = (int)g_debugMessages.size() - 1;
+
+    int y = contentTop;
+    for (int i = startIdx; i < (int)g_debugMessages.size() && (i - startIdx) < maxLines; i++)
+    {
+        RECT textRect = { rc.left + 8, y, rc.right - 8, y + lineHeight };
+        DrawTextA(hdc, g_debugMessages[i].c_str(), -1, &textRect, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += lineHeight;
+    }
+
+    // Footer with scroll info
+    ::SetTextColor(hdc, RGB(100, 100, 100));
+    char scrollInfo[64];
+    int endIdx = std::min(startIdx + maxLines, (int)g_debugMessages.size());
+    snprintf(scrollInfo, sizeof(scrollInfo), "Lines %d-%d of %d",
+             startIdx + 1, endIdx, (int)g_debugMessages.size());
+    RECT infoRect = { rc.left + 8, rc.bottom - 18, rc.right - 8, rc.bottom - 4 };
+    DrawTextA(hdc, scrollInfo, -1, &infoRect, DT_LEFT | DT_SINGLELINE);
+
+    SelectObject(hdc, hOldFont);
+    DeleteObject(hFont);
+}
 
 class VdsPreviewHandler :
     public IInitializeWithStream,
@@ -166,14 +287,11 @@ public:
         , m_site(nullptr)
         , m_hwndParent(nullptr)
         , m_hwndPreview(nullptr)
-        , m_viewMode(ViewMode::Slice)
         , m_sliceIndex(0)
-        , m_scrollOffset(0)
         , m_dimension(0)
-        , m_bgColor(RGB(255, 255, 255))
-        , m_textColor(RGB(0, 0, 0))
+        , m_bgColor(RGB(30, 30, 30))
+        , m_textColor(RGB(200, 200, 200))
         , m_cachedBitmap(nullptr)
-        , m_hasFocus(false)
     {
         ZeroMemory(&m_rect, sizeof(m_rect));
     }
@@ -219,25 +337,52 @@ public:
     // IInitializeWithStream
     STDMETHODIMP Initialize(IStream* pStream, DWORD grfMode) override
     {
+        m_lastError.clear();
         SafeRelease(&m_stream);
         m_stream = pStream;
         if (m_stream)
             m_stream->AddRef();
 
-        // Initialize renderer
-        if (m_stream)
+        if (!m_stream)
         {
-            m_renderer = std::make_unique<VdsRenderer>();
-            if (!m_renderer->Initialize(m_stream))
-            {
-                m_renderer.reset();
-                return E_FAIL;
-            }
-
-            // Set default dimension (prefer depth/time for 3D data)
-            m_dimension = (m_renderer->GetDimensionality() >= 3) ? 2 : 0;
-            m_sliceIndex = m_renderer->GetDefaultSliceIndex(m_dimension);
+            LogPreview("Initialize: no stream");
+            return S_OK;
         }
+
+        // Get stream size
+        STATSTG stat = {};
+        if (SUCCEEDED(m_stream->Stat(&stat, STATFLAG_NONAME)))
+        {
+            LogPreviewFmt("Stream: %lld bytes", stat.cbSize.QuadPart);
+        }
+
+        // Reset stream position
+        LARGE_INTEGER seekPos = {};
+        if (FAILED(m_stream->Seek(seekPos, STREAM_SEEK_SET, nullptr)))
+        {
+            LogPreview("Seek failed");
+            m_lastError = L"Seek failed";
+        }
+
+        // Create renderer
+        m_renderer = std::make_unique<VdsRenderer>();
+        m_renderer->SetLogFile(GetLogFilePath("openvds-previewpane.log").c_str());
+
+        if (!m_renderer->Initialize(m_stream))
+        {
+            LogPreview("VDS init failed");
+            m_lastError = L"VDS init failed";
+            m_renderer.reset();
+            return E_FAIL;
+        }
+
+        // Set default slice
+        m_dimension = m_renderer->GetDimensionality() - 1;
+        m_sliceIndex = m_renderer->GetDefaultSliceIndex(m_dimension);
+        LogPreviewFmt("VDS OK: %dD, slice %d/%d",
+                     m_renderer->GetDimensionality(),
+                     m_sliceIndex + 1,
+                     m_renderer->GetSliceCount(m_dimension));
 
         return S_OK;
     }
@@ -247,7 +392,6 @@ public:
     {
         m_hwndParent = hwnd;
         m_rect = *prc;
-
         if (m_hwndPreview)
         {
             SetWindowPos(m_hwndPreview, nullptr,
@@ -256,14 +400,12 @@ public:
                         m_rect.bottom - m_rect.top,
                         SWP_NOZORDER | SWP_NOACTIVATE);
         }
-
         return S_OK;
     }
 
     STDMETHODIMP SetRect(const RECT* prc) override
     {
         m_rect = *prc;
-
         if (m_hwndPreview)
         {
             SetWindowPos(m_hwndPreview, nullptr,
@@ -272,13 +414,12 @@ public:
                         m_rect.bottom - m_rect.top,
                         SWP_NOZORDER | SWP_NOACTIVATE);
         }
-
         return S_OK;
     }
 
     STDMETHODIMP DoPreview() override
     {
-        // Register window class
+        // Register window class once
         static bool registered = false;
         if (!registered)
         {
@@ -306,6 +447,11 @@ public:
             g_hInstance,
             this);
 
+        if (!m_hwndPreview)
+        {
+            LogPreviewFmt("CreateWindow failed: %d", GetLastError());
+        }
+
         return m_hwndPreview ? S_OK : E_FAIL;
     }
 
@@ -316,19 +462,14 @@ public:
             DestroyWindow(m_hwndPreview);
             m_hwndPreview = nullptr;
         }
-
         if (m_cachedBitmap)
         {
             DeleteObject(m_cachedBitmap);
             m_cachedBitmap = nullptr;
         }
-
         m_renderer.reset();
         SafeRelease(&m_stream);
         m_sliceIndex = 0;
-        m_scrollOffset = 0;
-        m_hasFocus = false;
-
         return S_OK;
     }
 
@@ -440,27 +581,57 @@ public:
             OnPaint();
             return 0;
 
-        case WM_LBUTTONDOWN:
-            ::SetFocus(hwnd);
-            m_hasFocus = true;
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-
-        case WM_KILLFOCUS:
-            m_hasFocus = false;
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-
-        case WM_KEYDOWN:
-            HandleKeyDown(wParam);
-            return 0;
-
         case WM_MOUSEWHEEL:
         {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-            HandleScroll(-delta);
+
+            // Get mouse position to determine which half
+            POINT pt;
+            pt.x = GET_X_LPARAM(lParam);
+            pt.y = GET_Y_LPARAM(lParam);
+            ScreenToClient(hwnd, &pt);
+
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int midX = (rc.right - rc.left) / 2;
+
+            if (pt.x > midX && m_renderer)
+            {
+                // Right side: scroll through slices
+                int maxSlice = m_renderer->GetSliceCount(m_dimension) - 1;
+                int newSlice = m_sliceIndex - delta;
+                newSlice = std::max(0, std::min(maxSlice, newSlice));
+                if (newSlice != m_sliceIndex)
+                {
+                    m_sliceIndex = newSlice;
+                    if (m_cachedBitmap)
+                    {
+                        DeleteObject(m_cachedBitmap);
+                        m_cachedBitmap = nullptr;
+                    }
+                }
+            }
+            else
+            {
+                // Left side: scroll through debug messages
+                g_debugScrollOffset -= delta;
+                if (g_debugScrollOffset < 0) g_debugScrollOffset = 0;
+                if (g_debugScrollOffset >= (int)g_debugMessages.size())
+                    g_debugScrollOffset = (int)g_debugMessages.size() - 1;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
+
+        case WM_SIZE:
+            // Invalidate cached bitmap on resize so it re-renders at new size
+            if (m_cachedBitmap)
+            {
+                DeleteObject(m_cachedBitmap);
+                m_cachedBitmap = nullptr;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
 
         case WM_ERASEBKGND:
             return 1;  // We handle erase in WM_PAINT
@@ -478,91 +649,61 @@ public:
     }
 
 private:
-    enum class ViewMode { Slice, Metadata };
-
     LONG m_refCount;
     IStream* m_stream;
     IUnknown* m_site;
     HWND m_hwndParent;
     HWND m_hwndPreview;
     RECT m_rect;
-    ViewMode m_viewMode;
     int m_sliceIndex;
-    int m_scrollOffset;
     int m_dimension;
     COLORREF m_bgColor;
     COLORREF m_textColor;
     HBITMAP m_cachedBitmap;
-    bool m_hasFocus;
     std::unique_ptr<VdsRenderer> m_renderer;
+    std::wstring m_lastError;  // For diagnostic display
 
-    void HandleKeyDown(WPARAM key)
+    // Create a test pattern bitmap (for debugging)
+    HBITMAP CreateTestBitmap(int width, int height, int sliceIndex)
     {
-        switch (key)
+        HDC hdcScreen = GetDC(nullptr);
+        if (!hdcScreen) return nullptr;
+
+        HDC hdcMem = CreateCompatibleDC(hdcScreen);
+        if (!hdcMem)
         {
-        case 'V':
-        case VK_TAB:
-            // Toggle view mode
-            m_viewMode = (m_viewMode == ViewMode::Slice) ? ViewMode::Metadata : ViewMode::Slice;
-            m_scrollOffset = 0;
-            InvalidateRect(m_hwndPreview, nullptr, TRUE);
-            break;
+            ReleaseDC(nullptr, hdcScreen);
+            return nullptr;
+        }
 
-        case VK_UP:
-            HandleScroll(-1);
-            break;
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
 
-        case VK_DOWN:
-            HandleScroll(1);
-            break;
+        void* pBits = nullptr;
+        HBITMAP hBitmap = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+        DeleteDC(hdcMem);
+        ReleaseDC(nullptr, hdcScreen);
 
-        case VK_PRIOR:  // Page Up
-            HandleScroll(-10);
-            break;
+        if (!hBitmap || !pBits) return nullptr;
 
-        case VK_NEXT:  // Page Down
-            HandleScroll(10);
-            break;
-
-        case VK_LEFT:
-        case VK_RIGHT:
-            // Cycle through dimensions (for 3D data)
-            if (m_viewMode == ViewMode::Slice && m_renderer)
+        // Fill with gradient test pattern
+        uint32_t* pixels = static_cast<uint32_t*>(pBits);
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
             {
-                int dimCount = m_renderer->GetDimensionality();
-                if (dimCount > 2)
-                {
-                    m_dimension = (key == VK_RIGHT) ?
-                        ((m_dimension + 1) % dimCount) :
-                        ((m_dimension + dimCount - 1) % dimCount);
-                    m_sliceIndex = m_renderer->GetDefaultSliceIndex(m_dimension);
-                    UpdateCachedBitmap();
-                    InvalidateRect(m_hwndPreview, nullptr, TRUE);
-                }
+                uint8_t r = (uint8_t)((x * 255 / width + sliceIndex * 7) % 256);
+                uint8_t g = (uint8_t)((y * 255 / height + sliceIndex * 13) % 256);
+                uint8_t b = (uint8_t)(((x + y) * 255 / (width + height) + sliceIndex * 23) % 256);
+                pixels[y * width + x] = (b) | (g << 8) | (r << 16);
             }
-            break;
         }
-    }
-
-    void HandleScroll(int delta)
-    {
-        if (m_viewMode == ViewMode::Slice && m_renderer)
-        {
-            // No slice navigation for 2D data
-            if (m_renderer->GetDimensionality() <= 2)
-                return;
-
-            int maxSlice = m_renderer->GetSliceCount(m_dimension) - 1;
-            m_sliceIndex = std::max(0, std::min(maxSlice, m_sliceIndex + delta));
-            UpdateCachedBitmap();
-        }
-        else
-        {
-            // Metadata scroll
-            m_scrollOffset = std::max(0, m_scrollOffset + delta);
-        }
-
-        InvalidateRect(m_hwndPreview, nullptr, TRUE);
+        return hBitmap;
     }
 
     void UpdateCachedBitmap()
@@ -573,13 +714,76 @@ private:
             m_cachedBitmap = nullptr;
         }
 
-        if (m_renderer && m_viewMode == ViewMode::Slice)
+        if (!m_renderer)
         {
-            RECT rc;
-            GetClientRect(m_hwndPreview, &rc);
-            int maxSize = std::max(rc.right - rc.left, rc.bottom - rc.top);
-            m_cachedBitmap = m_renderer->RenderSlice(m_dimension, m_sliceIndex, maxSize);
+            m_lastError = L"No renderer";
+            return;
         }
+
+        RECT rc;
+        GetClientRect(m_hwndPreview, &rc);
+        int maxSize = std::max(rc.right - rc.left, rc.bottom - rc.top);
+
+        LogPreviewFmt("Render: slice=%d, maxSize=%d", m_sliceIndex, maxSize);
+        m_cachedBitmap = m_renderer->RenderSlice(m_dimension, m_sliceIndex, maxSize);
+
+        // Copy VdsRenderer debug messages to the global debug display
+        const auto& vdsDebug = m_renderer->GetLastRenderDebugMessages();
+        for (const auto& msg : vdsDebug)
+        {
+            char narrowBuf[256];
+            WideCharToMultiByte(CP_UTF8, 0, msg.c_str(), -1, narrowBuf, sizeof(narrowBuf), nullptr, nullptr);
+            LogPreviewFmt("[VDS] %s", narrowBuf);
+        }
+
+        if (m_cachedBitmap)
+        {
+            BITMAP bm;
+            GetObject(m_cachedBitmap, sizeof(bm), &bm);
+            wchar_t buf[64];
+            swprintf_s(buf, L"OK: %dx%d", bm.bmWidth, bm.bmHeight);
+            m_lastError = buf;
+        }
+        else
+        {
+            m_lastError = L"Render failed";
+        }
+    }
+
+    void DrawVdsInfoPanel(HDC hdc, RECT rc)
+    {
+        if (!m_renderer)
+            return;
+
+        ::SetBkMode(hdc, TRANSPARENT);
+
+        HFONT hFont = CreateFontA(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+        // Header
+        RECT headerRect = { rc.left + 8, rc.top + 6, rc.right - 8, rc.top + 20 };
+        ::SetTextColor(hdc, RGB(60, 120, 180));
+        DrawTextA(hdc, "VDS Information", -1, &headerRect, DT_LEFT | DT_SINGLELINE);
+
+        // Content
+        ::SetTextColor(hdc, RGB(50, 50, 50));
+        auto lines = m_renderer->GetMetadataLines();
+
+        int lineHeight = 14;
+        int y = rc.top + 26;
+        int maxLines = (rc.bottom - rc.top - 32) / lineHeight;
+
+        for (size_t i = 0; i < lines.size() && (int)i < maxLines; i++)
+        {
+            RECT textRect = { rc.left + 8, y, rc.right - 8, y + lineHeight };
+            DrawTextW(hdc, lines[i].c_str(), -1, &textRect, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+            y += lineHeight;
+        }
+
+        SelectObject(hdc, hOldFont);
+        DeleteObject(hFont);
     }
 
     void OnPaint()
@@ -590,64 +794,130 @@ private:
         RECT rc;
         GetClientRect(m_hwndPreview, &rc);
 
-        // Fill background
-        HBRUSH hbr = CreateSolidBrush(m_bgColor);
-        FillRect(hdc, &rc, hbr);
-        DeleteObject(hbr);
+        int totalWidth = rc.right - rc.left;
+        int midX = totalWidth / 2;
 
-        if (!m_renderer)
+        // Left panel: Debug log (white background)
+        RECT leftRect = { rc.left, rc.top, midX - 2, rc.bottom };
+        HBRUSH hbrWhite = CreateSolidBrush(RGB(255, 255, 255));
+        FillRect(hdc, &leftRect, hbrWhite);
+        DeleteObject(hbrWhite);
+
+        // Right panel: VDS info (light gray background)
+        RECT rightRect = { midX + 2, rc.top, rc.right, rc.bottom };
+        HBRUSH hbrLight = CreateSolidBrush(RGB(245, 245, 245));
+        FillRect(hdc, &rightRect, hbrLight);
+        DeleteObject(hbrLight);
+
+        // Divider
+        RECT divider = { midX - 2, rc.top, midX + 2, rc.bottom };
+        HBRUSH hbrDiv = CreateSolidBrush(RGB(180, 180, 180));
+        FillRect(hdc, &divider, hbrDiv);
+        DeleteObject(hbrDiv);
+
+        // Draw debug messages on left (black text on white)
+        DrawDebugMessages(hdc, leftRect, RGB(0, 0, 0));
+
+        // Right panel layout: VDS info on top, bitmap in middle, status at bottom
+        if (m_renderer)
         {
-            DrawErrorMessage(hdc, rc, L"Failed to open VDS file");
-        }
-        else if (m_viewMode == ViewMode::Slice)
-        {
-            RenderSliceView(hdc, rc);
-        }
-        else
-        {
-            RenderMetadataView(hdc, rc);
+            // Update cached bitmap if needed
+            if (!m_cachedBitmap)
+            {
+                UpdateCachedBitmap();
+            }
+
+            int infoHeight = 220;  // Height for VDS info section
+            int statusHeight = 28;
+            int bitmapAreaTop = rightRect.top + infoHeight;
+            int bitmapAreaBottom = rightRect.bottom - statusHeight;
+
+            // Top: VDS info panel
+            RECT infoRect = { rightRect.left, rightRect.top, rightRect.right, rightRect.top + infoHeight };
+            DrawVdsInfoPanel(hdc, infoRect);
+
+            // Separator line
+            RECT sepLine = { rightRect.left + 8, infoRect.bottom - 1, rightRect.right - 8, infoRect.bottom + 1 };
+            HBRUSH hbrSep = CreateSolidBrush(RGB(200, 200, 200));
+            FillRect(hdc, &sepLine, hbrSep);
+            DeleteObject(hbrSep);
+
+            // Middle: bitmap
+            if (m_cachedBitmap)
+            {
+                BITMAP bm;
+                GetObject(m_cachedBitmap, sizeof(bm), &bm);
+
+                int availW = rightRect.right - rightRect.left - 20;
+                int availH = bitmapAreaBottom - bitmapAreaTop - 10;
+                if (availW > 0 && availH > 0)
+                {
+                    float scale = std::min((float)availW / bm.bmWidth, (float)availH / bm.bmHeight);
+                    int destW = (int)(bm.bmWidth * scale);
+                    int destH = (int)(bm.bmHeight * scale);
+                    int destX = rightRect.left + (rightRect.right - rightRect.left - destW) / 2;
+                    int destY = bitmapAreaTop + (bitmapAreaBottom - bitmapAreaTop - destH) / 2;
+
+                    HDC hdcMem = CreateCompatibleDC(hdc);
+                    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, m_cachedBitmap);
+                    SetStretchBltMode(hdc, HALFTONE);
+                    StretchBlt(hdc, destX, destY, destW, destH,
+                              hdcMem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+                    SelectObject(hdcMem, hOldBitmap);
+                    DeleteDC(hdcMem);
+                }
+            }
+
+            // Bottom: slice navigation status
+            RECT statusRect = { rightRect.left, rightRect.bottom - statusHeight, rightRect.right, rightRect.bottom };
+            HBRUSH hbrStatus = CreateSolidBrush(RGB(60, 60, 60));
+            FillRect(hdc, &statusRect, hbrStatus);
+            DeleteObject(hbrStatus);
+
+            ::SetTextColor(hdc, RGB(220, 220, 220));
+            ::SetBkMode(hdc, TRANSPARENT);
+            wchar_t buf[128];
+            if (m_renderer->GetDimensionality() >= 3)
+            {
+                const wchar_t* dimName = m_renderer->GetDimensionName(m_dimension);
+                swprintf_s(buf, L"%s Slice %d / %d  |  Scroll to navigate",
+                          dimName, m_sliceIndex + 1, m_renderer->GetSliceCount(m_dimension));
+            }
+            else
+            {
+                swprintf_s(buf, L"2D Data");
+            }
+            DrawTextW(hdc, buf, -1, &statusRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
         EndPaint(m_hwndPreview, &ps);
     }
 
-    void DrawErrorMessage(HDC hdc, const RECT& rc, const wchar_t* message)
-    {
-        ::SetTextColor(hdc, m_textColor);
-        ::SetBkMode(hdc, TRANSPARENT);
-        DrawTextW(hdc, message, -1, const_cast<RECT*>(&rc),
-                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-
     void RenderSliceView(HDC hdc, RECT rc)
     {
-        // Ensure bitmap is cached
         if (!m_cachedBitmap)
             UpdateCachedBitmap();
 
+        ::SetTextColor(hdc, m_textColor);
+        ::SetBkMode(hdc, TRANSPARENT);
+
         if (m_cachedBitmap)
         {
-            // Get bitmap dimensions
             BITMAP bm;
             GetObject(m_cachedBitmap, sizeof(bm), &bm);
 
-            // Calculate display rect (preserve aspect ratio, leave room for text)
-            int availableHeight = (rc.bottom - rc.top) - 40;
+            int statusHeight = 24;
+            int availableHeight = (rc.bottom - rc.top) - statusHeight;
             int availableWidth = rc.right - rc.left;
 
             RECT destRect = CalculateAspectFitRect(bm.bmWidth, bm.bmHeight,
                                                    availableWidth, availableHeight);
 
-            // Center in available space
-            OffsetRect(&destRect, 0, 10);
-
-            // Draw bitmap
             HDC hdcMem = CreateCompatibleDC(hdc);
             HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, m_cachedBitmap);
 
             SetStretchBltMode(hdc, HALFTONE);
             SetBrushOrgEx(hdc, 0, 0, nullptr);
-
             StretchBlt(hdc,
                       destRect.left, destRect.top,
                       destRect.right - destRect.left,
@@ -659,81 +929,30 @@ private:
             SelectObject(hdcMem, hOldBitmap);
             DeleteDC(hdcMem);
         }
-
-        // Draw status text
-        ::SetTextColor(hdc, m_textColor);
-        ::SetBkMode(hdc, TRANSPARENT);
-
-        wchar_t buf[256];
-        int dimensionality = m_renderer->GetDimensionality();
-
-        if (dimensionality == 2)
+        else
         {
-            // For 2D data, no slice navigation
-            swprintf_s(buf, L"2D Data View  |  [V]=Metadata%s",
-                      m_hasFocus ? L"" : L"  |  Click to enable keyboard");
+            RECT msgRect = rc;
+            msgRect.bottom -= 24;
+            DrawTextW(hdc, m_lastError.c_str(), -1, &msgRect,
+                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_WORD_ELLIPSIS);
+        }
+
+        // Status text at bottom
+        wchar_t buf[128];
+        if (m_renderer->GetDimensionality() == 2)
+        {
+            swprintf_s(buf, L"2D Data");
         }
         else
         {
             const wchar_t* dimName = m_renderer->GetDimensionName(m_dimension);
-            swprintf_s(buf, L"%s Slice %d/%d  |  [V]=Metadata  [↑↓]=Navigate  [←→]=Dimension%s",
-                      dimName,
-                      m_sliceIndex + 1,
-                      m_renderer->GetSliceCount(m_dimension),
-                      m_hasFocus ? L"" : L"  |  Click to enable keyboard");
+            swprintf_s(buf, L"%s Slice %d / %d  (scroll to navigate)",
+                      dimName, m_sliceIndex + 1, m_renderer->GetSliceCount(m_dimension));
         }
 
         RECT textRect = rc;
-        textRect.top = textRect.bottom - 30;
+        textRect.top = textRect.bottom - 22;
         DrawTextW(hdc, buf, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-
-    void RenderMetadataView(HDC hdc, RECT rc)
-    {
-        auto lines = m_renderer->GetMetadataLines();
-
-        HFONT hFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-
-        ::SetTextColor(hdc, m_textColor);
-        ::SetBkMode(hdc, TRANSPARENT);
-
-        int lineHeight = 20;
-        int y = 10 - (m_scrollOffset * lineHeight);
-        int margin = 20;
-
-        for (const auto& line : lines)
-        {
-            if (y + lineHeight > 0 && y < rc.bottom - 40)
-            {
-                RECT lineRect = { margin, y, rc.right - margin, y + lineHeight };
-                DrawTextW(hdc, line.c_str(), -1, &lineRect, DT_LEFT | DT_SINGLELINE);
-            }
-            y += lineHeight;
-        }
-
-        SelectObject(hdc, hOldFont);
-        DeleteObject(hFont);
-
-        // Draw status
-        wchar_t buf[128];
-        swprintf_s(buf, L"[V]=Slice View  |  [↑↓/PgUp/PgDn]=Scroll%s",
-                  m_hasFocus ? L"" : L"  |  Click to enable keyboard");
-
-        RECT textRect = rc;
-        textRect.top = textRect.bottom - 30;
-
-        HFONT hStatusFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        HFONT hOldStatusFont = (HFONT)SelectObject(hdc, hStatusFont);
-
-        DrawTextW(hdc, buf, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-        SelectObject(hdc, hOldStatusFont);
-        DeleteObject(hStatusFont);
     }
 
     RECT CalculateAspectFitRect(int srcWidth, int srcHeight, int targetWidth, int targetHeight)

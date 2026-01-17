@@ -158,9 +158,9 @@ Thumbnails appear automatically in:
    regedit /s unregister.reg
    ```
 
-2. **Restart Explorer**:
+2. **Restart Explorer/Kill PrevHost.exe**:
    ```cmd
-   taskkill /f /im explorer.exe && start explorer.exe
+   taskkill /f /im explorer.exe && start explorer.exe && taskkill /f /im prevhost.exe
    ```
 
 3. **Delete the DLL** (optional):

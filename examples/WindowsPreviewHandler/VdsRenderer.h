@@ -29,6 +29,8 @@
 #include <OpenVDS/VolumeDataLayout.h>
 #include <OpenVDS/VolumeDataAccess.h>
 
+#include "utils/GITStreamWrapper.h"
+
 // Helper class for rendering VDS slices to bitmaps
 class VdsRenderer
 {
@@ -58,10 +60,23 @@ public:
     int GetDimensionality() const;
     const wchar_t* GetDimensionName(int dimension) const;
 
+    // Set the log file path (for debugging)
+    void SetLogFile(const char* logFilePath);
+
+    // Get VDS name from metadata
+    std::wstring GetVdsName() const;
+
+    // Get last render debug messages (for on-screen display)
+    const std::vector<std::wstring>& GetLastRenderDebugMessages() const { return m_lastRenderDebugMessages; }
+
+
 private:
+    std::vector<std::wstring> m_lastRenderDebugMessages;
+    std::string m_logFilePath;
     OpenVDS::VDSHandle m_vdsHandle;
     OpenVDS::VolumeDataLayout* m_layout;
-    IStream* m_stream;  // Borrowed reference
+    IStream* m_stream;          // Original stream reference (for thumbnails in explorer.exe)
+    IStream* m_wrappedStream;   // GIT-wrapped stream for cross-thread access (preview handler)
 
     // Convert float data to 8-bit grayscale with value mapping
     void NormalizeToGrayscale(const float* source, uint8_t* dest,
@@ -70,7 +85,6 @@ private:
     // Create a colorized bitmap from grayscale data (blue-white-red colormap)
     HBITMAP CreateColorizedBitmap(const uint8_t* grayscaleData,
                                   int width, int height);
-
-    // Render entire 2D dataset
-    HBITMAP Render2D(int maxSize);
 };
+
+static void LogToFile(const std::vector<std::wstring>& lines, const std::string& logFilePath);

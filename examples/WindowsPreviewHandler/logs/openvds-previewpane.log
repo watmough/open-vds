@@ -1,0 +1,4 @@
+[2026-01-17 07:37:31.673] Stream: 12211826 bytes
+[2026-01-17 07:37:31.689] VdsRenderer::Initialize | GIT wrapper created successfully | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
+[2026-01-17 07:37:31.689] VDS OK: 3D, slice 185/368
+[2026-01-17 07:37:31.697] Render: slice=184, maxSize=945
