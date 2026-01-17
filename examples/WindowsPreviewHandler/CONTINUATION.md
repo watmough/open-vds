@@ -1,10 +1,14 @@
 # Preview Handler Fix - Continuation Notes
 
+## Current Status: READY FOR TESTING
+
+The single-threaded OpenVDS implementation is complete. A mutex was added to prevent concurrent render requests that caused crashes during rapid scrolling. The DLL has been built and is ready for deployment.
+
+**Next Step**: Run `retry.bat` to deploy and test the shell extension.
+
 ## Problem Summary
 
-The Windows Preview Handler shows blank/zero data while thumbnails work correctly.
-
-**Root Cause**: COM threading/marshaling deadlock
+The Windows Preview Handler had a COM threading/marshaling deadlock:
 
 1. Preview handlers run in `prevhost.exe` (isolated process for security)
 2. The shell marshals an IStream to the preview handler's thread
@@ -15,81 +19,171 @@ The Windows Preview Handler shows blank/zero data while thumbnails work correctl
 
 **Why thumbnails work**: They run in `explorer.exe` directly, no COM marshaling needed.
 
-## Failed Approach: GIT Wrapper
+## Solution Implemented: OPENVDS_SINGLE_THREADED Compile-Time Option
 
-We tried using COM's Global Interface Table (GIT) to make the IStream accessible from worker threads. Files created:
-- `utils/GITStreamWrapper.h` - IStream wrapper using GIT
+Created a compile-time option that makes OpenVDS execute all data requests synchronously on the calling thread, avoiding the COM marshaling deadlock.
 
-**Result**: Still deadlocks. GIT provides thread-local proxies, but those proxies still need to marshal calls back to the original apartment where the IStream lives.
+### Changes Made
 
-## Planned Solution: Single-Threaded OpenVDS Path
+#### 1. ThreadPool.h (`common/ThreadPool/ThreadPool.h`)
+Added synchronous stub when `OPENVDS_SINGLE_THREADED` is defined:
+```cpp
+#ifdef OPENVDS_SINGLE_THREADED
+class ThreadPool
+{
+public:
+  ThreadPool(size_t) {}
+  ~ThreadPool() {}
+  template <class F>
+  auto Enqueue(F&& f) -> std::future<typename std::result_of<F()>::type>
+  {
+    using return_type = typename std::result_of<F()>::type;
+    auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
+    std::future<return_type> res = task->get_future();
+    (*task)();  // Execute immediately on calling thread (synchronous)
+    return res;
+  }
+  size_t ThreadCount() const { return 1; }
+  static int ConfigureThreadCount(const char*, int = 1) { return 1; }
+};
+#endif
+```
 
-Create a synchronous/single-threaded code path in OpenVDS that reads data on the calling thread instead of using the thread pool.
+#### 2. VolumeDataRequestProcessor.cpp (`src/OpenVDS/VDS/VolumeDataRequestProcessor.cpp`)
+Critical fix: Release mutex before Enqueue in single-threaded mode to prevent deadlock:
+```cpp
+if (singleThread)
+{
+#ifdef OPENVDS_SINGLE_THREADED
+  int64_t jobId = job->jobId;
+  lock.unlock();  // Release to avoid deadlock in ProcessPageInJob
+#endif
+  job->future.push_back(m_threadPool.Enqueue([job, pageAccessor, processor]
+  { ... }));
+#ifdef OPENVDS_SINGLE_THREADED
+  return jobId;
+#else
+  return job->jobId;
+#endif
+}
+```
 
-### Steps
+#### 3. CMakeLists.txt (root)
+Added option:
+```cmake
+option(OPENVDS_SINGLE_THREADED "Disable threading for COM/IStream compatibility" OFF)
+```
 
-1. **Remove GIT wrapper code** from VdsRenderer
-   - Revert `VdsRenderer.h` - remove `m_wrappedStream`, remove GIT include
-   - Revert `VdsRenderer.cpp` - remove GIT wrapper creation in `Initialize()`
-   - Can delete `utils/GITStreamWrapper.h` or keep for reference
+#### 4. src/OpenVDS/CMakeLists.txt
+Added compile definitions for both targets:
+```cmake
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(openvds_objects PUBLIC OPENVDS_SINGLE_THREADED)
+endif()
+# ... and later:
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(openvds PUBLIC OPENVDS_SINGLE_THREADED)
+endif()
+```
 
-2. **Create test program** to verify single-threaded OpenVDS reads
-   - New file: `examples/WindowsPreviewHandler/SingleThreadTest.cpp`
-   - Opens a VDS file via IStream
-   - Requests a slice WITHOUT using thread pool
-   - Verifies data is non-zero
+#### 5. examples/WindowsPreviewHandler/CMakeLists.txt
+Added definition for shell extension:
+```cmake
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(VdsShellExtension PRIVATE OPENVDS_SINGLE_THREADED)
+endif()
+```
 
-3. **Modify OpenVDS** to support synchronous reads
-   - Key file: `src/OpenVDS/VDS/VolumeDataRequestProcessor.cpp`
-   - Currently uses: `m_threadPool.Enqueue([job, pageAccessor, processor] { ... });`
-   - Need option to execute job synchronously on calling thread
-   - Possible approaches:
-     - Add `RequestVolumeSubsetSync()` API
-     - Add flag to `IStreamOpenOptions` to disable threading
-     - Add global/per-handle config for synchronous mode
+#### 6. VdsRenderer.h
+- Removed GIT wrapper code
+- Added mutex for concurrent render protection:
+```cpp
+#include <mutex>
+// ... in private section:
+mutable std::mutex m_renderMutex;  // Prevent concurrent render requests
+```
 
-4. **Update VdsRenderer** to use synchronous API
-   - Pass appropriate options when opening VDS
-   - May need to update `RenderSlice()` to use sync API
+#### 7. VdsRenderer.cpp
+- Removed GIT wrapper code from `Initialize()`
+- Added mutex lock at start of `RenderSlice()`:
+```cpp
+HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSize)
+{
+    std::lock_guard<std::mutex> lock(m_renderMutex);
+    // ... rest of function
+}
+```
 
-### Key Files to Examine
+### Build Commands
 
-**OpenVDS threading**:
-- `src/OpenVDS/VDS/VolumeDataRequestProcessor.cpp` - where thread pool is used
-- `src/OpenVDS/VDS/VolumeDataAccessManagerImpl.cpp` - request handling
-- `src/OpenVDS/OpenVDS/OpenVDS.h` - public API
+```bash
+# Configure with single-threaded option
+cmake -G Ninja -B build -DOPENVDS_SINGLE_THREADED=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
-**Preview Handler**:
-- `examples/WindowsPreviewHandler/VdsRenderer.cpp` - uses `RequestVolumeSubset`
-- `examples/WindowsPreviewHandler/VdsShellExtension.cpp` - COM handlers
+# Build the shell extension
+cmake --build build --target VdsShellExtension
 
-### Log Files (for debugging)
+# Or build everything
+cmake --build build
+```
 
-Located in `%USERPROFILE%\AppData\LocalLow\Temp\`:
+### Deploy and Test
+
+```bash
+# Use retry.bat to deploy (stops explorer, copies DLL, restarts)
+retry.bat
+
+# Or manually:
+taskkill /f /im explorer.exe
+copy build\examples\WindowsPreviewHandler\VdsShellExtension.dll C:\path\to\registered\location
+start explorer.exe
+```
+
+### Test Harness
+
+A standalone test harness exists for debugging without Explorer:
+```bash
+cmake --build build && .\build\examples\WindowsPreviewHandler\VdsRenderTest.exe --benchmark c:\path\to\test.vds
+```
+
+## Issues Fixed During Development
+
+1. **MULTI_THREADED mode still showing after enabling flag**
+   - Cause: CMake definition only on `openvds_objects`, not propagating
+   - Fix: Added PUBLIC definition to `openvds` target and PRIVATE to `VdsShellExtension`
+
+2. **Hang at "Requesting..." with no debug output**
+   - Cause: Debug fprintf not flushing on Windows
+   - Fix: Added `fflush(stderr)` after each `fprintf`
+
+3. **Deadlock in AddJob at lock.lock()**
+   - Cause: Synchronous Enqueue executed while holding m_mutex, ProcessPageInJob tried to acquire locks
+   - Fix: Release lock before Enqueue when `OPENVDS_SINGLE_THREADED` defined
+
+4. **Preview handler crash after rapid scrolling**
+   - Cause: Re-entrancy - second render request arrived before first completed (18ms apart in logs)
+   - Fix: Added `std::mutex m_renderMutex` with `lock_guard` in `RenderSlice()`
+
+## Log Files
+
+Located in `%USERPROFILE%\AppData\Local\Temp\`:
 - `openvds-thumbnails.log` - thumbnail handler logs
 - `openvds-previewpane.log` - preview handler logs
-- `openvds-git.log` - GIT wrapper debug logs (from failed approach)
 
-### Current State of Code
+Also copied to `examples/WindowsPreviewHandler/logs/` for analysis.
 
-- `VdsRenderer.cpp` has GIT wrapper code in `Initialize()`
-- `VdsRenderer.h` has `m_wrappedStream` member and GIT include
-- `utils/GITStreamWrapper.h` exists with debug logging
-- Build works: `ninja -C build VdsShellExtension`
+## Test VDS File
 
-### Test VDS File
+The test file is a 368x368x368 3D VDS. User has local test files at `c:\Shared\`.
 
-The test file is a 368x368x368 3D VDS (~12MB). Path TBD - user has local test files.
+## Key Files Reference
 
-## Questions to Resolve
+**OpenVDS threading**:
+- `common/ThreadPool/ThreadPool.h` - thread pool with single-threaded stub
+- `src/OpenVDS/VDS/VolumeDataRequestProcessor.cpp` - where thread pool is used
 
-1. Where exactly in OpenVDS should synchronous mode be implemented?
-2. Should it be a compile-time option, runtime flag, or API variant?
-3. Performance implications for large files (acceptable for preview use case)
-4. Should we support partial sync (main thread reads, background decompression)?
-
-## References
-
-- [Preview Handler Threading](https://learn.microsoft.com/en-us/windows/win32/shell/preview-handlers)
-- OpenVDS `VolumeDataRequestProcessor` uses `ThreadPool::Enqueue()`
-- COM apartment threading causes the marshaling requirement
+**Preview Handler**:
+- `examples/WindowsPreviewHandler/VdsRenderer.cpp` - rendering with mutex
+- `examples/WindowsPreviewHandler/VdsRenderer.h` - renderer class with mutex member
+- `examples/WindowsPreviewHandler/VdsShellExtension.cpp` - COM handlers
+- `examples/WindowsPreviewHandler/VdsRenderTest.cpp` - standalone test harness

@@ -818,6 +818,9 @@ static HBITMAP ScaleBitmap(HBITMAP hSource, int maxSize)
 
 HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSize)
 {
+    // Prevent concurrent render requests - only one render at a time
+    std::lock_guard<std::mutex> lock(m_renderMutex);
+
     std::vector<std::wstring> dbg;  // Debug info for error bitmap
     m_lastRenderDebugMessages.clear();
 

@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 
 #include <OpenVDS/OpenVDS.h>
 #include <OpenVDS/VolumeDataLayout.h>
@@ -74,6 +75,7 @@ private:
     OpenVDS::VDSHandle m_vdsHandle;
     OpenVDS::VolumeDataLayout* m_layout;
     IStream* m_stream;          // Stream reference
+    mutable std::mutex m_renderMutex;  // Prevent concurrent render requests
 
     // Convert float data to 8-bit grayscale with value mapping
     void NormalizeToGrayscale(const float* source, uint8_t* dest,
