@@ -943,10 +943,49 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             }
         }
 
-        // Select optimal LOD based on slice size and target display size
-        // Higher LODs decompress much faster with minimal quality loss when downscaling anyway
-        int selectedLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
-                                           dim0Size, dim1Size, maxSize);
+        // Calculate target LOD based on display size (what we eventually want)
+        int targetLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
+                                         dim0Size, dim1Size, maxSize);
+
+        // Get max available LOD (highest number = lowest quality = fastest)
+        int maxLOD = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels()) - 1;
+        if (maxLOD < 0) maxLOD = 0;
+
+        // Progressive LOD loading: start fast, refine if quick
+        // Check if slice or dimension changed - reset to fastest LOD
+        bool sliceChanged = (sliceIndex != m_lastSliceIndex || sliceOnDimension != m_lastDimension);
+        if (sliceChanged)
+        {
+            m_currentLOD = maxLOD;  // Start with fastest (lowest quality)
+            m_isRefining = true;
+            m_lastSliceIndex = sliceIndex;
+            m_lastDimension = sliceOnDimension;
+        }
+
+        // If we haven't set a LOD yet, start with fastest
+        if (m_currentLOD < 0)
+        {
+            m_currentLOD = maxLOD;
+            m_isRefining = true;
+        }
+
+        // If still refining and last render was fast, try better quality
+        if (m_isRefining && !sliceChanged && m_lastRenderTimeMs < FAST_RENDER_THRESHOLD_MS && m_currentLOD > targetLOD)
+        {
+            m_currentLOD--;  // Try better quality
+        }
+
+        // Don't go below target LOD
+        if (m_currentLOD < targetLOD)
+        {
+            m_currentLOD = targetLOD;
+            m_isRefining = false;
+        }
+
+        int selectedLOD = m_currentLOD;
+
+        // Start timing
+        auto renderStartTime = std::chrono::high_resolution_clock::now();
 
         // Calculate LOD-sized buffer dimensions
         // OpenVDS returns smaller buffers at higher LODs: LOD N returns 1/(2^N) resolution per axis
@@ -1074,6 +1113,22 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             SaveBitmapToFile(hBitmap, debugBmpPath.c_str());
             swprintf_s(buf, L"Saved: %S", debugBmpPath.c_str());
             dbg.push_back(buf);
+        }
+
+        // Measure render time for progressive LOD
+        auto renderEndTime = std::chrono::high_resolution_clock::now();
+        m_lastRenderTimeMs = std::chrono::duration<double, std::milli>(renderEndTime - renderStartTime).count();
+
+        // Log progressive LOD status
+        swprintf_s(buf, L"Render: %.1fms, LOD %d→%d %s",
+                   m_lastRenderTimeMs, selectedLOD, targetLOD,
+                   m_isRefining ? L"(refining)" : L"(stable)");
+        dbg.push_back(buf);
+
+        // If render was slow, stop refining
+        if (m_lastRenderTimeMs >= FAST_RENDER_THRESHOLD_MS)
+        {
+            m_isRefining = false;
         }
 
         // Store debug messages for preview handler to display

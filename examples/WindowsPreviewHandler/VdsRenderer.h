@@ -25,6 +25,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <chrono>
 
 #include <OpenVDS/OpenVDS.h>
 #include <OpenVDS/VolumeDataLayout.h>
@@ -68,6 +69,9 @@ public:
     // Get last render debug messages (for on-screen display)
     const std::vector<std::wstring>& GetLastRenderDebugMessages() const { return m_lastRenderDebugMessages; }
 
+    // Check if progressive LOD refinement is still pending (caller should trigger another render)
+    bool IsRefinementPending() const { return m_isRefining && m_currentLOD > 0; }
+
     // Wait for any in-progress render to complete before destruction
     // Call this before destroying the renderer to avoid orphaned requests
     void WaitForPendingRender() { std::lock_guard<std::mutex> lock(m_renderMutex); }
@@ -79,6 +83,19 @@ private:
     OpenVDS::VolumeDataLayout* m_layout;
     IStream* m_stream;          // Stream reference
     mutable std::mutex m_renderMutex;  // Prevent concurrent render requests
+
+    // Progressive LOD state - start with fastest LOD, refine if renders are quick
+    int m_currentLOD = -1;           // Current LOD being displayed (-1 = not set)
+    int m_targetLOD = 0;             // Target LOD based on display size
+    int m_lastSliceIndex = -1;       // Last rendered slice index
+    int m_lastDimension = -1;        // Last rendered dimension
+    double m_lastRenderTimeMs = 0;   // Timing of last render
+    bool m_isRefining = true;        // Still in progressive refinement mode
+    static constexpr double FAST_RENDER_THRESHOLD_MS = 50.0;  // Threshold for "fast" render
+
+    // Internal render at specific LOD
+    HBITMAP RenderSliceAtLOD(int dimension, int sliceIndex, int maxSize, int lod,
+                             double& outRenderTimeMs);
 
     // Convert float data to 8-bit grayscale with value mapping
     void NormalizeToGrayscale(const float* source, uint8_t* dest,

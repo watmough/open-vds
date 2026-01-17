@@ -619,11 +619,17 @@ public:
             if (pt.x > midX && m_renderer)
             {
                 // Right side: scroll through slices
-                // Don't delete cached bitmap here - let OnPaint update it
-                // This keeps the old slice visible while rendering the new one
+                // Scroll by 10 slices normally, 1 slice with SHIFT held
+                int scrollAmount = (GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 10;
                 int maxSlice = m_renderer->GetSliceCount(m_dimension) - 1;
-                int newSlice = m_sliceIndex - delta;
+                int newSlice = m_sliceIndex - delta * scrollAmount;
                 newSlice = std::max(0, std::min(maxSlice, newSlice));
+
+                // Cancel any pending refinement timer when slice changes
+                if (newSlice != m_sliceIndex)
+                {
+                    KillTimer(hwnd, 1);
+                }
                 m_sliceIndex = newSlice;
             }
             else
@@ -639,6 +645,8 @@ public:
         }
 
         case WM_SIZE:
+            // Cancel any pending refinement timer
+            KillTimer(hwnd, 1);
             // Invalidate cached bitmap on resize so it re-renders at new size
             if (m_cachedBitmap)
             {
@@ -652,7 +660,18 @@ public:
         case WM_ERASEBKGND:
             return 1;  // We handle erase in WM_PAINT
 
+        case WM_TIMER:
+            if (wParam == 1)  // Refinement timer
+            {
+                KillTimer(hwnd, 1);
+                // Force re-render by invalidating cache
+                m_cachedSliceIndex = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+
         case WM_DESTROY:
+            KillTimer(hwnd, 1);  // Cancel any pending refinement timer
             if (m_cachedBitmap)
             {
                 DeleteObject(m_cachedBitmap);
@@ -800,6 +819,14 @@ private:
             wchar_t buf[64];
             swprintf_s(buf, L"OK: %dx%d", bm.bmWidth, bm.bmHeight);
             m_lastError = buf;
+
+            // Progressive LOD: if refinement is pending, trigger another render
+            if (m_renderer->IsRefinementPending())
+            {
+                // Invalidate to trigger another render cycle for better quality
+                // Small delay allows the current frame to display first
+                SetTimer(m_hwndPreview, 1, 10, nullptr);  // Timer ID 1, 10ms delay
+            }
         }
         else
         {

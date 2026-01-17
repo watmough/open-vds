@@ -82,6 +82,19 @@ struct JobPage
   VolumeDataChunk chunk;
 };
 
+// Holds fetched (but not yet decompressed) chunk data
+// Used for two-phase processing: sequential I/O followed by parallel decompression
+struct FetchedPageData
+{
+  bool success = false;
+  bool sparse = false;
+  std::vector<uint8_t> serializedData;
+  std::vector<uint8_t> metadata;
+  CompressionMethod compressionMethod = CompressionMethod::None;
+  int adaptiveLevel = 0;
+  Error error;
+};
+
 struct PageAccessorNotifier
 {
   PageAccessorNotifier(std::mutex &mutex)
@@ -168,6 +181,12 @@ public:
   static int64_t StaticGetVolumeTracesBufferSize(VolumeDataLayout const *volumeDataLayout, int traceCount, int traceDimension, int LOD, int channel);
 
   ThreadPool& GetThreadPool() { return m_threadPool; }
+
+#ifdef OPENVDS_SINGLE_THREADED
+  // Get the decompression thread pool (always multi-threaded for parallel decompression)
+  AsyncThreadPool& GetDecompressionThreadPool() { return *m_decompressionThreadPool; }
+#endif
+
 private:
   VolumeDataAccessManagerImpl &m_manager;
   std::map<PageAccessorKey, VolumeDataPageAccessorImpl *> m_pageAccessors;
@@ -177,6 +196,13 @@ private:
   ThreadPool m_threadPool;
   std::thread m_cleanupThread;
   Logger &m_logger;
+
+#ifdef OPENVDS_SINGLE_THREADED
+  // Separate thread pool for decompression - always multi-threaded even when
+  // OPENVDS_SINGLE_THREADED is defined. This allows parallel decompression
+  // while keeping I/O single-threaded for COM/IStream compatibility.
+  std::unique_ptr<AsyncThreadPool> m_decompressionThreadPool;
+#endif
 };
 
 }

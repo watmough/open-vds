@@ -1740,6 +1740,13 @@ VolumeDataRequestProcessor::VolumeDataRequestProcessor(VolumeDataAccessManagerIm
   , m_threadPool(requestThreadCount > 0 ? requestThreadCount : ThreadPool::ConfigureThreadCount("OPENVDS_REQUEST_THREAD_COUNT"))
   , m_cleanupThread([this]() { CleanupThread(m_pageAccessorNotifier, m_pageAccessors); } )
   , m_logger(logger)
+#ifdef OPENVDS_SINGLE_THREADED
+  // Create a multi-threaded pool for decompression even in single-threaded mode.
+  // I/O stays single-threaded (for COM/IStream compatibility), but decompression
+  // can safely run in parallel on worker threads.
+  , m_decompressionThreadPool(std::make_unique<AsyncThreadPool>(
+      AsyncThreadPool::ConfigureThreadCount("OPENVDS_DECOMPRESS_THREAD_COUNT", std::thread::hardware_concurrency())))
+#endif
 {}
 
 VolumeDataRequestProcessor::~VolumeDataRequestProcessor()
@@ -1965,17 +1972,90 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
   else
   {
 #ifdef OPENVDS_SINGLE_THREADED
-    // In single-threaded mode, Enqueue executes synchronously.
-    // Release lock to avoid deadlock in ProcessPageInJob.
+    // Two-phase processing for SINGLE_THREADED mode:
+    // Phase 1: Sequential I/O on main thread (COM/IStream safe)
+    // Phase 2: Parallel decompression on AsyncThreadPool
     int64_t jobId = job->jobId;
     lock.unlock();
-    for (int i = 0; i < int(job->pages.size()); i++)
+
+    int pageCount = int(job->pages.size());
+
+    // Phase 1: Fetch all pages sequentially (I/O only)
+    // This keeps all IStream access on the main thread
+    std::vector<VolumeDataPageAccessorImpl::FetchedData> fetchedData(pageCount);
+    for (int i = 0; i < pageCount; i++)
     {
-      job->future.push_back(m_threadPool.Enqueue([job, i, pageAccessor, processor]
+      if (job->cancelled)
+        break;
+
+      JobPage& jobPage = job->pages[i];
+      if (jobPage.page && jobPage.page->EnterSettingData())
+      {
+        fetchedData[i] = pageAccessor->FetchPageData(jobPage.page);
+        if (!fetchedData[i].success)
         {
-          return ProcessPageInJob(job, i, pageAccessor, processor);
+          job->cancelled = true;
+          job->completedError = fetchedData[i].error;
+        }
+      }
+    }
+
+    // Phase 2: Parallel decompression using AsyncThreadPool
+    // Decompression is CPU-bound and doesn't need IStream access
+    std::vector<std::future<Error>> decompressFutures;
+    decompressFutures.reserve(pageCount);
+
+    for (int i = 0; i < pageCount; i++)
+    {
+      decompressFutures.push_back(m_decompressionThreadPool->Enqueue(
+        [job, i, pageAccessor, processor, &fetchedData]() -> Error
+        {
+          MarkJobAsDoneOnExit jobDone(job, i);
+          JobPage& jobPage = job->pages[i];
+
+          if (!jobPage.page)
+            return Error();
+
+          if (job->cancelled)
+          {
+            if (jobPage.page)
+            {
+              pageAccessor->CancelPreparedReadPage(jobPage.page);
+              jobPage.page = nullptr;
+            }
+            return Error();
+          }
+
+          Error error;
+
+          // Decompress the fetched data
+          if (!pageAccessor->DecompressPageData(jobPage.page, fetchedData[i]))
+          {
+            pageAccessor->GetError(jobPage.page, error);
+            job->cancelled = true;
+            return error;
+          }
+
+          // Process the decompressed page
+          processor(jobPage.page, jobPage.chunk, error);
+          return error;
         }));
     }
+
+    // Wait for all decompressions to complete and collect results
+    for (auto& future : decompressFutures)
+    {
+      Error error = future.get();
+      if (error.code && !job->completedError.code)
+      {
+        job->completedError = error;
+      }
+    }
+
+    // Mark job as done
+    job->done = true;
+    job->pageAccessorNotifier.setDirty();
+
     return jobId;
 #else
     for (int i = 0; i < int(job->pages.size()); i++)

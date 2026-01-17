@@ -116,6 +116,22 @@ public:
   void CancelPreparedReadPage(VolumeDataPageImpl *page);
   bool GetError(VolumeDataPageImpl *page, OpenVDS::Error &error);
 
+  // Two-phase read for parallel decompression support:
+  // Phase 1: FetchPageData - I/O only, fetches compressed data from storage (single-threaded safe)
+  // Phase 2: DecompressPageData - CPU only, decompresses data (can run in parallel)
+  struct FetchedData
+  {
+    bool success = false;
+    bool sparse = false;
+    std::vector<uint8_t> serializedData;
+    std::vector<uint8_t> metadata;
+    CompressionMethod compressionMethod = CompressionMethod::None;
+    int adaptiveLevel = 0;
+    Error error;
+  };
+  FetchedData FetchPageData(VolumeDataPageImpl *page);
+  bool DecompressPageData(VolumeDataPageImpl *page, FetchedData &fetchedData);
+
   int   GetMaxPages() override;
   void  SetMaxPages(int maxPages) override;
 

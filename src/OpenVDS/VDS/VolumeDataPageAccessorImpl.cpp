@@ -877,4 +877,149 @@ void VolumeDataPageAccessorImpl::Commit()
   m_isCommitInProgress = false;
   m_commitFinishedCondition.notify_all();
 }
+
+// ============================================================================
+// Two-phase read support for parallel decompression
+// ============================================================================
+
+VolumeDataPageAccessorImpl::FetchedData VolumeDataPageAccessorImpl::FetchPageData(VolumeDataPageImpl* pageImpl)
+{
+  FetchedData result;
+
+  if (!pageImpl->RequestPrepared())
+  {
+    result.success = true;  // Page already has data
+    return result;
+  }
+
+  // Handle jobID case (async prefetch already in progress)
+  int64_t jobID = pageImpl->JobID();
+  if (jobID != -1)
+  {
+    bool success = m_accessManager->WaitForCompletion(jobID);
+    if (!success)
+    {
+      ReadErrorException readError("", 0);
+      m_accessManager->IsCanceled(jobID, &readError);
+      result.error.code = readError.GetErrorCode();
+      result.error.string = readError.GetErrorMessage();
+      return result;
+    }
+    result.success = true;
+    return result;
+  }
+
+  // Perform I/O: fetch compressed data from storage
+  VolumeDataChunk volumeDataChunk = m_layer->GetChunkFromIndex(pageImpl->GetChunkIndex());
+  CompressionInfo compressionInfo;
+
+  if (!m_accessManager->GetVolumeDataStore()->ReadChunk(volumeDataChunk, m_layer->GetEffectiveWaveletAdaptiveLoadLevel(), result.serializedData, result.metadata, compressionInfo, result.error))
+  {
+    m_logger.LogError(fmt::format("FetchPageData: Failed when reading chunk: {}", result.error.string.c_str()));
+    return result;
+  }
+
+  result.compressionMethod = compressionInfo.GetCompressionMethod();
+  result.adaptiveLevel = compressionInfo.GetAdaptiveLevel();
+
+  // Check for sparse data
+  if (result.metadata.size() >= sizeof(uint64_t))
+  {
+    uint64_t hash = VolumeDataHash::UNKNOWN;
+    memcpy(&hash, result.metadata.data(), sizeof(uint64_t));
+    if (hash == VolumeDataHash::UNKNOWN)
+    {
+      result.sparse = true;
+    }
+  }
+
+  result.success = true;
+  return result;
+}
+
+bool VolumeDataPageAccessorImpl::DecompressPageData(VolumeDataPageImpl* pageImpl, FetchedData& fetchedData)
+{
+  std::unique_lock<std::mutex> pageListMutexLock(m_pagesMutex, std::defer_lock);
+
+  if (!pageImpl->RequestPrepared())
+  {
+    pageListMutexLock.lock();
+    return pageImpl->GetErrorInternal().code == 0;
+  }
+
+  if (!fetchedData.success)
+  {
+    pageListMutexLock.lock();
+    pageImpl->SetError(fetchedData.error);
+    pageImpl->SetRequestPrepared(false);
+    pageImpl->LeaveSettingData();
+    m_pageReadCondition.notify_all();
+    return false;
+  }
+
+  // If FetchPageData handled async prefetch, the page should already have data
+  if (fetchedData.serializedData.empty() && !fetchedData.sparse)
+  {
+    pageListMutexLock.lock();
+    m_pagesRead++;
+    pageImpl->SetRequestPrepared(false);
+    pageImpl->LeaveSettingData();
+    m_pageReadCondition.notify_all();
+    LimitPageListSize(m_maxPages, pageListMutexLock);
+    return m_layer != nullptr;
+  }
+
+  Error error;
+  std::vector<uint8_t> page_data;
+  uint64_t page_hash = VolumeDataHash::UNKNOWN;
+  DataBlock dataBlock;
+
+  VolumeDataChunk volumeDataChunk = m_layer->GetChunkFromIndex(pageImpl->GetChunkIndex());
+
+  if (fetchedData.sparse)
+  {
+    VolumeDataHash constantValueVolumeDataHash = m_layer->IsUseNoValue() ? VolumeDataHash(VolumeDataHash::NOVALUE) : VolumeDataHash(0.0f);
+    m_accessManager->GetVolumeDataStore()->CreateConstantValueDataBlock(volumeDataChunk, m_layer->GetFormat(), pageImpl->GetNoValue(), m_layer->GetComponents(), constantValueVolumeDataHash, dataBlock, page_data, error);
+  }
+  else
+  {
+    bool success = m_accessManager->GetVolumeDataStore()->DeserializeVolumeData(
+      volumeDataChunk,
+      fetchedData.serializedData,
+      fetchedData.metadata,
+      fetchedData.compressionMethod,
+      fetchedData.adaptiveLevel,
+      pageImpl->GetFormat(),
+      pageImpl->UseNoValue(),
+      m_layer->GetNoValue(),
+      pageImpl->GetNoValue(),
+      dataBlock,
+      page_data,
+      page_hash,
+      error);
+
+    if (!success)
+    {
+      pageListMutexLock.lock();
+      pageImpl->SetError(error);
+      pageImpl->SetRequestPrepared(false);
+      pageImpl->LeaveSettingData();
+      m_pageReadCondition.notify_all();
+      m_logger.LogError(fmt::format("DecompressPageData: Failed when deserializing chunk: {}", error.string.c_str()));
+      return false;
+    }
+  }
+
+  pageListMutexLock.lock();
+  pageImpl->SetBufferData(dataBlock, m_layer->GetChunkDimensionGroup(), std::move(page_data), page_hash);
+
+  m_pagesRead++;
+  pageImpl->SetRequestPrepared(false);
+  pageImpl->LeaveSettingData();
+  m_pageReadCondition.notify_all();
+
+  LimitPageListSize(m_maxPages, pageListMutexLock);
+  return m_layer != nullptr;
+}
+
 }

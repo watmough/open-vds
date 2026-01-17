@@ -193,3 +193,116 @@ public:
 };
 
 #endif // OPENVDS_SINGLE_THREADED
+
+// ============================================================================
+// ASYNC THREAD POOL (always multi-threaded)
+// ============================================================================
+// This thread pool is always multi-threaded regardless of OPENVDS_SINGLE_THREADED.
+// Used for CPU-bound work (like decompression) that doesn't require I/O access.
+// In OPENVDS_SINGLE_THREADED mode, I/O happens on main thread, but decompression
+// can safely run in parallel on worker threads.
+// ============================================================================
+
+class AsyncThreadPool
+{
+public:
+  AsyncThreadPool(size_t threads)
+    : stop(false)
+  {
+    for (size_t i = 0; i < threads; ++i)
+      workers.emplace_back(
+        [this]
+        {
+          for (;;)
+          {
+            std::function<void()> task;
+
+            {
+              std::unique_lock<std::mutex> lock(this->queue_mutex);
+              this->condition.wait(lock,
+                [this]
+                {
+                  return this->stop || !this->tasks.empty();
+                });
+              if (this->stop && this->tasks.empty())
+                return;
+              task = std::move(this->tasks.front());
+              this->tasks.pop();
+            }
+
+            task();
+          }
+        });
+  }
+
+  ~AsyncThreadPool()
+  {
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex);
+      stop = true;
+    }
+    condition.notify_all();
+    for (std::thread& worker : workers)
+      worker.join();
+  }
+
+  template <class F>
+  auto Enqueue(F&& f) -> std::future<typename std::result_of<F()>::type>
+  {
+    using return_type = typename std::result_of<F()>::type;
+
+    auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
+
+    std::future<return_type> res = task->get_future();
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex);
+
+      if (stop)
+      {
+        fprintf(stderr, "enqueue on stopped AsyncThreadPool");
+        abort();
+      }
+
+      tasks.emplace([task]()
+        {
+          (*task)();
+        });
+    }
+    condition.notify_one();
+    return res;
+  }
+
+  size_t ThreadCount() const { return workers.size(); }
+
+  static int ConfigureThreadCount(const char *envVariableName, int defaultValue = std::thread::hardware_concurrency())
+  {
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable:4996)
+#endif
+    if (const char *envVariable = std::getenv(envVariableName))
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+    {
+      try
+      {
+        int threadCount = std::stoi(std::string(envVariable));
+        if (threadCount > 0)
+          return threadCount;
+      }
+      catch (...)
+      {
+      }
+    }
+    return defaultValue;
+  }
+
+private:
+  std::vector<std::thread> workers;
+  std::queue<std::function<void()>> tasks;
+
+  std::mutex queue_mutex;
+  std::condition_variable condition;
+  bool stop;
+};
