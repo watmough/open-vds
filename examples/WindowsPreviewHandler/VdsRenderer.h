@@ -29,8 +29,6 @@
 #include <OpenVDS/VolumeDataLayout.h>
 #include <OpenVDS/VolumeDataAccess.h>
 
-#include "utils/GITStreamWrapper.h"
-
 // Helper class for rendering VDS slices to bitmaps
 class VdsRenderer
 {
@@ -75,8 +73,7 @@ private:
     std::string m_logFilePath;
     OpenVDS::VDSHandle m_vdsHandle;
     OpenVDS::VolumeDataLayout* m_layout;
-    IStream* m_stream;          // Original stream reference (for thumbnails in explorer.exe)
-    IStream* m_wrappedStream;   // GIT-wrapped stream for cross-thread access (preview handler)
+    IStream* m_stream;          // Stream reference
 
     // Convert float data to 8-bit grayscale with value mapping
     void NormalizeToGrayscale(const float* source, uint8_t* dest,

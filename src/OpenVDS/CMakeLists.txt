@@ -216,6 +216,10 @@ if (BUILD_OPENSSL)
 endif()
 target_compile_definitions(openvds_objects PRIVATE openvds_EXPORTS)
 
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(openvds_objects PUBLIC OPENVDS_SINGLE_THREADED)
+endif()
+
 if (NOT WIN32 AND AUTODETECT_CA_CERTIFICATES)
   target_compile_definitions(openvds_objects PRIVATE AUTODETECT_CA_CERTIFICATES)
 endif()
@@ -384,6 +388,11 @@ else()
 endif()
 
 target_link_libraries(openvds PRIVATE openvds_objects)
+
+# Propagate single-threaded mode to consumers (for ThreadPool.h)
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(openvds PUBLIC OPENVDS_SINGLE_THREADED)
+endif()
 
 setCommonTargetProperties(openvds_objects)
 setCommonTargetProperties(openvds)

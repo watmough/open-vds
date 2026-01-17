@@ -154,6 +154,7 @@ else()
   option(ENABLE_ASAN "Build this OpenVDS with AddressSanitizer" OFF)
   option(DISABLE_LTO "Disable LTO for release builds" OFF)
   option(ENABLE_GEN_PYTEST_INI "Enable generating pytest.ini file in project root" ON)
+  option(OPENVDS_SINGLE_THREADED "Disable threading for COM/IStream compatibility (Windows shell extensions)" OFF)
 
 
   include(CMakeDependentOption)

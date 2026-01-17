@@ -225,7 +225,6 @@ VdsRenderer::VdsRenderer()
     , m_vdsHandle(nullptr)
     , m_layout(nullptr)
     , m_stream(nullptr)
-    , m_wrappedStream(nullptr)
 {
 }
 
@@ -268,11 +267,6 @@ VdsRenderer::~VdsRenderer()
         m_vdsHandle = nullptr;
     }
     m_layout = nullptr;
-    if (m_wrappedStream)
-    {
-        m_wrappedStream->Release();
-        m_wrappedStream = nullptr;
-    }
     if (m_stream)
     {
         m_stream->Release();
@@ -297,63 +291,30 @@ bool VdsRenderer::Initialize(IStream* pStream)
         m_vdsHandle = nullptr;
     }
     m_layout = nullptr;
-    if (m_wrappedStream)
-    {
-        m_wrappedStream->Release();
-        m_wrappedStream = nullptr;
-    }
     if (m_stream)
     {
         m_stream->Release();
         m_stream = nullptr;
     }
 
-    // Keep a reference to the original stream
+    // Keep a reference to the stream
     m_stream = pStream;
     m_stream->AddRef();
 
-    // Create a GIT-wrapped stream for cross-thread access
-    // This allows OpenVDS worker threads to safely access the marshaled IStream
-    // from prevhost.exe (the preview handler surrogate process)
-    HRESULT hr = GITStreamWrapper::Create(pStream, &m_wrappedStream);
-    if (FAILED(hr) || !m_wrappedStream)
+    // Open VDS using the IStream
+    // Note: OpenVDS must be built with OPENVDS_SINGLE_THREADED to work
+    // in prevhost.exe (preview handler), otherwise COM marshaling deadlocks
+    OpenVDS::IStreamOpenOptions options(pStream);
+    OpenVDS::Error error;
+    m_vdsHandle = OpenVDS::Open(options, error);
+
+    if (error.code != 0 || !m_vdsHandle)
     {
-        swprintf_s(buf, L"GIT wrapper failed: 0x%08X", hr);
+        swprintf_s(buf, L"OpenVDS::Open failed: %d", error.code);
         dbg.push_back(buf);
-        LogToFile(dbg, m_logFilePath);
-
-        // Fall back to using the original stream directly
-        // This works for thumbnails (explorer.exe, no marshaling)
-        dbg.push_back(L"Falling back to direct stream");
-        OpenVDS::IStreamOpenOptions options(pStream);
-        OpenVDS::Error error;
-        m_vdsHandle = OpenVDS::Open(options, error);
-    }
-    else
-    {
-        dbg.push_back(L"GIT wrapper created successfully");
-
-        // Open VDS using the GIT-wrapped stream
-        // Worker threads will get proper thread-local proxies from the GIT
-        OpenVDS::IStreamOpenOptions options(m_wrappedStream);
-        OpenVDS::Error error;
-        m_vdsHandle = OpenVDS::Open(options, error);
-
-        if (error.code != 0 || !m_vdsHandle)
-        {
-            swprintf_s(buf, L"OpenVDS failed with wrapped stream: %d", error.code);
-            dbg.push_back(buf);
-            wchar_t wMsg[256];
-            MultiByteToWideChar(CP_UTF8, 0, error.string.c_str(), -1, wMsg, 256);
-            dbg.push_back(wMsg);
-            LogToFile(dbg, m_logFilePath);
-            return false;
-        }
-    }
-
-    if (!m_vdsHandle)
-    {
-        dbg.push_back(L"Failed to open VDS");
+        wchar_t wMsg[256];
+        MultiByteToWideChar(CP_UTF8, 0, error.string.c_str(), -1, wMsg, 256);
+        dbg.push_back(wMsg);
         LogToFile(dbg, m_logFilePath);
         return false;
     }
@@ -860,6 +821,12 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
     std::vector<std::wstring> dbg;  // Debug info for error bitmap
     m_lastRenderDebugMessages.clear();
 
+    // Early logging to confirm we entered RenderSlice
+    wchar_t entryBuf[128];
+    swprintf_s(entryBuf, L"RenderSlice(dim=%d, slice=%d, maxSize=%d)", sliceOnDimension, sliceIndex, maxSize);
+    dbg.push_back(entryBuf);
+    LogToFile(dbg, m_logFilePath);
+
     if (!m_vdsHandle || !m_layout)
     {
         dbg.push_back(L"VDS Error");
@@ -994,9 +961,19 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             }
         }
 
+        // Log before request to help diagnose hangs
+#ifdef OPENVDS_SINGLE_THREADED
+        dbg.push_back(L"Mode: SINGLE_THREADED");
+#else
+        dbg.push_back(L"Mode: MULTI_THREADED (will deadlock in prevhost.exe!)");
+#endif
+        LogToFile(dbg, m_logFilePath);
+
+        swprintf_s(buf, L"Requesting %dx%d slice...", dim0Size, dim1Size);
+        dbg.push_back(buf);
+        LogToFile(dbg, m_logFilePath);
+
         // Request the slice using selected LOD
-        // The GIT-wrapped stream allows OpenVDS worker threads to access the
-        // marshaled IStream from prevhost.exe safely
         auto request = accessManager.RequestVolumeSubset<float>(
             buffer.data(),
             buffer.size() * sizeof(float),
@@ -1004,6 +981,9 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             selectedLOD, 0,
             voxelMin, voxelMax
         );
+
+        dbg.push_back(L"Request created, waiting for completion...");
+        LogToFile(dbg, m_logFilePath);
 
         if (!request->WaitForCompletion())
         {

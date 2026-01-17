@@ -27,6 +27,12 @@
 #include <vector>
 #include <cstdlib>
 
+#ifndef OPENVDS_SINGLE_THREADED
+
+// ============================================================================
+// MULTI-THREADED IMPLEMENTATION (default)
+// ============================================================================
+
 class ThreadPool
 {
 public:
@@ -142,3 +148,48 @@ inline int ThreadPool::ConfigureThreadCount(const char *envVariableName, int def
   }
   return defaultValue;
 }
+
+#else // OPENVDS_SINGLE_THREADED
+
+// ============================================================================
+// SINGLE-THREADED IMPLEMENTATION
+// ============================================================================
+// This synchronous stub executes all tasks immediately on the calling thread.
+// Used for Windows Shell Extension (preview/thumbnail handlers) where OpenVDS
+// runs in prevhost.exe with a COM-marshaled IStream. Worker threads cannot
+// access the IStream without marshaling back to the main thread's COM apartment,
+// causing deadlock when the main thread is blocked waiting for completion.
+// By executing synchronously, all IStream calls happen on the main thread.
+// ============================================================================
+
+class ThreadPool
+{
+public:
+  ThreadPool(size_t) {}
+  ~ThreadPool() {}
+
+  template <class F>
+  auto Enqueue(F&& f) -> std::future<typename std::result_of<F()>::type>
+  {
+    using return_type = typename std::result_of<F()>::type;
+
+    // Create packaged_task to get a future
+    auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
+    std::future<return_type> res = task->get_future();
+
+    // Execute immediately on calling thread (synchronous)
+    (*task)();
+
+    return res;
+  }
+
+  size_t ThreadCount() const { return 1; }
+
+  static int ConfigureThreadCount(const char* /*envVariableName*/, int /*defaultValue*/ = 1)
+  {
+    // Always return 1 in single-threaded mode
+    return 1;
+  }
+};
+
+#endif // OPENVDS_SINGLE_THREADED

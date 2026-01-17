@@ -1925,6 +1925,12 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
   job->future.reserve(chunks.size());
   if (singleThread)
   {
+#ifdef OPENVDS_SINGLE_THREADED
+    // In single-threaded mode, Enqueue executes synchronously.
+    // Release lock to avoid deadlock in ProcessPageInJob.
+    int64_t jobId = job->jobId;
+    lock.unlock();
+#endif
     job->future.push_back(m_threadPool.Enqueue([job, pageAccessor, processor]
     {
       Error error;
@@ -1944,15 +1950,25 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
           if (job->pages[i].page)
           {
             pageAccessor->CancelPreparedReadPage(job->pages[i].page);
-            job->pages[i].page = nullptr; 
+            job->pages[i].page = nullptr;
           }
         }
       }
       return error;
     }));
-  } 
+#ifdef OPENVDS_SINGLE_THREADED
+    return jobId;
+#else
+    return job->jobId;
+#endif
+  }
   else
   {
+#ifdef OPENVDS_SINGLE_THREADED
+    // In single-threaded mode, Enqueue executes synchronously.
+    // Release lock to avoid deadlock in ProcessPageInJob.
+    int64_t jobId = job->jobId;
+    lock.unlock();
     for (int i = 0; i < int(job->pages.size()); i++)
     {
       job->future.push_back(m_threadPool.Enqueue([job, i, pageAccessor, processor]
@@ -1960,8 +1976,18 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
           return ProcessPageInJob(job, i, pageAccessor, processor);
         }));
     }
+    return jobId;
+#else
+    for (int i = 0; i < int(job->pages.size()); i++)
+    {
+      job->future.push_back(m_threadPool.Enqueue([job, i, pageAccessor, processor]
+        {
+          return ProcessPageInJob(job, i, pageAccessor, processor);
+        }));
+    }
+    return job->jobId;
+#endif
   }
-  return job->jobId;
 }
 
 bool  VolumeDataRequestProcessor::IsActive(int64_t jobID)

@@ -14,6 +14,11 @@ if(WIN32)
       propsys
   )
 
+  # Single-threaded mode for COM/IStream compatibility in prevhost.exe
+  if (OPENVDS_SINGLE_THREADED)
+    target_compile_definitions(VdsShellExtension PRIVATE OPENVDS_SINGLE_THREADED)
+  endif()
+
   set_target_properties(VdsShellExtension PROPERTIES
     FOLDER examples
     CXX_STANDARD 17
