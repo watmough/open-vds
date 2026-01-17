@@ -138,16 +138,18 @@ static void LogToFile(const std::vector<std::wstring>& lines, const std::string&
     logFile.flush();
 }
 
-// Performance thresholds based on benchmark data:
-// - 90% of renders complete in under 50ms
-// - Target render time for thumbnails: < 100ms
-// - Use higher LOD if slice voxels > 500K (roughly 700x700)
-static constexpr int64_t VOXEL_THRESHOLD_FOR_LOD = 500000;  // Use higher LOD if slice has more voxels
-static constexpr int MIN_LOD_DIMENSION = 128;  // Don't use LOD that would give < 128 pixels in smallest dim
+// LOD optimization: Use higher LODs (lower resolution) for faster rendering
+// when the display size doesn't require full resolution data.
+// Higher LODs return smaller buffers - LOD N returns data at 1/(2^N) resolution per axis.
+static constexpr bool ENABLE_LOD_OPTIMIZATION = true;
 
-// TEMPORARY: Disable LOD optimization until data quality issues are resolved
-// Higher LODs appear to return incorrect/degraded data in some cases
-static constexpr bool ENABLE_LOD_OPTIMIZATION = false;
+// Calculate the number of voxels at a given LOD for a range [voxelMin, voxelMax)
+// At LOD 0, returns voxelMax - voxelMin. At LOD 1, returns half that, etc.
+// This matches OpenVDS::GetLODSize() from VolumeData.h
+static inline int GetLODSize(int voxelMin, int voxelMax, int lod)
+{
+    return ((voxelMax - voxelMin - 1) >> lod) + 1;
+}
 
 // Data validation thresholds
 static constexpr float MAX_INVALID_RATIO = 0.5f;    // Warn if more than 50% NaN/Inf values
@@ -588,39 +590,41 @@ HBITMAP VdsRenderer::CreateColorizedBitmap(const uint8_t* grayscaleData,
     return hBitmap;
 }
 
-// Select optimal LOD for rendering based on slice size and target thumbnail size
-// Returns the LOD level to use (0 = full resolution, higher = faster but lower quality)
-// Based on benchmark data showing 10-100x speedup with higher LODs for large datasets
+// Select optimal LOD for rendering based on slice size and target display size.
+// Returns the highest LOD level where effective resolution >= targetSize.
+// LOD 0 = full resolution, LOD 1 = half resolution per axis, etc.
+// OpenVDS returns data at full resolution regardless of LOD, but decompression
+// is dramatically faster at higher LODs (typically 4× per LOD level).
+//
+// Example for 1200×1200 slice displayed at 400×400:
+//   LOD 0: 1200 effective → overkill, slow
+//   LOD 1: 600 effective  → still > 400, good quality, ~4× faster
+//   LOD 2: 300 effective  → < 400, might be blurry
+//   Selection: LOD 1
 static int SelectOptimalLOD(OpenVDS::VolumeDataAccessManager& accessManager,
                             OpenVDS::VolumeDataLayout* layout,
                             OpenVDS::DimensionsND dimGroup,
                             int dim0Size, int dim1Size,
                             int targetSize)
 {
-    // TEMPORARY: LOD optimization disabled due to data quality issues
-    // Higher LODs appear to return incorrect data in some cases
     if (!ENABLE_LOD_OPTIMIZATION)
         return 0;
 
     // Get available LOD count from layout descriptor
     int lodCount = static_cast<int>(layout->GetLayoutDescriptor().GetLODLevels());
-    // Note: lodCount == 0 means this dimension group is unavailable
-    // Only proceed if lodCount > 0
-    if (lodCount == 0)
-        return 0;  // No LODs available for this dimension group
+    if (lodCount <= 1)
+        return 0;  // Only LOD0 available
 
-    int64_t sliceVoxels = static_cast<int64_t>(dim0Size) * dim1Size;
+    // Calculate minimum slice dimension (the limiting factor for quality)
+    int minSliceDim = std::min(dim0Size, dim1Size);
 
-    // If slice is small enough, use LOD0 for best quality
-    if (sliceVoxels <= VOXEL_THRESHOLD_FOR_LOD)
+    // If slice is already smaller than target, use LOD0 for best quality
+    if (minSliceDim <= targetSize)
         return 0;
-
-    // Calculate minimum dimension at LOD0
-    int minDim = std::min(dim0Size, dim1Size);
 
     // Try each LOD starting from highest (fastest) to find one that:
     // 1. Is available (Normal or Remapped status)
-    // 2. Still provides sufficient resolution for the target thumbnail
+    // 2. Still provides sufficient resolution for the target display size
     for (int lod = lodCount - 1; lod >= 0; lod--)
     {
         // Check if this LOD is available
@@ -628,13 +632,11 @@ static int SelectOptimalLOD(OpenVDS::VolumeDataAccessManager& accessManager,
         if (status == OpenVDS::VDSProduceStatus::Unavailable)
             continue;
 
-        // Estimate the effective resolution at this LOD
-        // Higher LOD = lower resolution, roughly halving each level
-        // Note: OpenVDS returns full-res data but decompression is faster at higher LOD
-        int effectiveMinDim = minDim >> lod;
+        // Calculate effective resolution at this LOD (halves each level)
+        int effectiveRes = minSliceDim >> lod;
 
-        // Ensure we have at least MIN_LOD_DIMENSION pixels and enough for the target
-        if (effectiveMinDim >= MIN_LOD_DIMENSION && effectiveMinDim >= targetSize / 2)
+        // Use this LOD if it provides at least targetSize resolution
+        if (effectiveRes >= targetSize)
         {
             return lod;
         }
@@ -918,17 +920,6 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         // Display: dim0 (Sample) is Y-axis (vertical), dim1 is X-axis (horizontal)
         // Slice on dim2 (Inline for 3D)
 
-        // OpenVDS returns data with dim0 as fastest-varying
-        // buffer layout: buffer[dim1_idx * dim0Size + dim0_idx]
-        //
-        // For display: dim0 (Sample) should be vertical (Y), dim1 should be horizontal (X)
-        // This requires transposing the buffer when creating the bitmap
-        int width = dim1Size;
-        int height = dim0Size;
-
-        // Allocate buffer for slice data
-        std::vector<float> buffer(dim0Size * dim1Size);
-
         // Find available dimension groups
         struct DimGroupInfo {
             OpenVDS::DimensionsND group;
@@ -952,17 +943,32 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             }
         }
 
-        // Select LOD (prefer LOD0 for quality)
-        int lodCount = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels());
-        int selectedLOD = 0;
-        for (int lod = 0; lod < lodCount; lod++)
-        {
-            if (accessManager.GetVDSProduceStatus(dimGroup, lod, 0) == OpenVDS::VDSProduceStatus::Normal)
-            {
-                selectedLOD = lod;
-                break;
-            }
-        }
+        // Select optimal LOD based on slice size and target display size
+        // Higher LODs decompress much faster with minimal quality loss when downscaling anyway
+        int selectedLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
+                                           dim0Size, dim1Size, maxSize);
+
+        // Calculate LOD-sized buffer dimensions
+        // OpenVDS returns smaller buffers at higher LODs: LOD N returns 1/(2^N) resolution per axis
+        // voxelMin/voxelMax stay in LOD0 coordinates, but the returned data is at LOD resolution
+        int lodDim0Size = GetLODSize(voxelMin[0], voxelMax[0], selectedLOD);
+        int lodDim1Size = GetLODSize(voxelMin[1], voxelMax[1], selectedLOD);
+
+        // OpenVDS returns data with dim0 as fastest-varying
+        // buffer layout: buffer[dim1_idx * lodDim0Size + dim0_idx]
+        //
+        // For display: dim0 (Sample) should be vertical (Y), dim1 should be horizontal (X)
+        // This requires transposing the buffer when creating the bitmap
+        int width = lodDim1Size;
+        int height = lodDim0Size;
+
+        // Log LOD selection for debugging
+        swprintf_s(buf, L"LOD: %d (buffer: %dx%d, full res: %dx%d, target: %d px)",
+                   selectedLOD, lodDim0Size, lodDim1Size, dim0Size, dim1Size, maxSize);
+        dbg.push_back(buf);
+
+        // Allocate buffer for LOD-sized slice data
+        std::vector<float> buffer(lodDim0Size * lodDim1Size);
 
         // Log before request to help diagnose hangs
 #ifdef OPENVDS_SINGLE_THREADED
@@ -972,11 +978,12 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
 #endif
         LogToFile(dbg, m_logFilePath);
 
-        swprintf_s(buf, L"Requesting %dx%d slice...", dim0Size, dim1Size);
+        swprintf_s(buf, L"Requesting LOD%d slice (%dx%d voxels)...", selectedLOD, lodDim0Size, lodDim1Size);
         dbg.push_back(buf);
         LogToFile(dbg, m_logFilePath);
 
         // Request the slice using selected LOD
+        // Note: voxelMin/voxelMax are in LOD0 coordinates, but returned data is LOD-sized
         auto request = accessManager.RequestVolumeSubset<float>(
             buffer.data(),
             buffer.size() * sizeof(float),
@@ -1013,10 +1020,10 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         swprintf_s(buf, L"Output: %d x %d", width, height);
         dbg.push_back(buf);
 
-        // Quick min/max/mean of buffer data
+        // Quick min/max/mean of buffer data (use LOD-sized dimensions)
         float rawMin = bufferPtr[0], rawMax = bufferPtr[0];
         double rawSum = 0.0;
-        size_t bufferSize = static_cast<size_t>(dim0Size) * dim1Size;
+        size_t bufferSize = static_cast<size_t>(lodDim0Size) * lodDim1Size;
         for (size_t i = 0; i < bufferSize; i++)
         {
             float v = bufferPtr[i];
@@ -1040,14 +1047,15 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         if (invScaling < 1e-6f) invScaling = 1.0f;
 
         // Create grayscale buffer with proper layout for bitmap
-        // Transpose: bitmap(x,y) where x is dim1 (horizontal), y is dim0/Sample (vertical)
+        // Transpose: bitmap(x,y) where x is lodDim1 (horizontal), y is lodDim0/Sample (vertical)
+        // Note: width = lodDim1Size, height = lodDim0Size
         std::vector<uint8_t> grayscale(width * height);
 
-        for (int y = 0; y < height; y++)      // y iterates over dim0 (Sample)
+        for (int y = 0; y < height; y++)      // y iterates over lodDim0 (Sample)
         {
-            for (int x = 0; x < width; x++)   // x iterates over dim1
+            for (int x = 0; x < width; x++)   // x iterates over lodDim1
             {
-                float v = bufferPtr[x * dim0Size + y];  // buffer[dim1_idx * dim0Size + dim0_idx]
+                float v = bufferPtr[x * lodDim0Size + y];  // buffer[dim1_idx * lodDim0Size + dim0_idx]
                 if (!IsValidRenderValue(v)) v = histoMean;  // Filter NaN/Inf/extreme values
                 // Map to 0-255: center at 128, scale by stddev
                 float val = 128.0f + (v - histoMean) * 128.0f / invScaling;

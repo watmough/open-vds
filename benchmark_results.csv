@@ -1,0 +1,19 @@
+Filename,Dimensionality,SliceDim,SliceIndex,LOD,DimGroup,Width,Height,TotalVoxels,Success,ErrorMessage,OpenTimeMs,RenderTimeMs,TotalTimeMs
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_4.vds",3,0,20,0,"Dimensions_01",248,248,61504,TRUE,"",18.59,22.70,22.70
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_4.vds",3,0,20,1,"Dimensions_012",248,248,61504,TRUE,"",18.59,5.73,5.73
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_4.vds",3,1,124,0,"Dimensions_01",248,41,10168,TRUE,"",18.59,0.91,0.91
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_4.vds",3,1,124,1,"Dimensions_012",248,41,10168,TRUE,"",18.59,0.18,0.18
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_4.vds",3,2,124,0,"Dimensions_01",248,41,10168,TRUE,"",18.59,0.15,0.15
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_4.vds",3,2,124,1,"Dimensions_012",248,41,10168,TRUE,"",18.59,0.08,0.08
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_6.vds",3,0,20,0,"Dimensions_01",248,248,61504,TRUE,"",18.28,21.49,21.50
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_6.vds",3,0,20,1,"Dimensions_012",248,248,61504,TRUE,"",18.28,9.74,9.74
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_6.vds",3,1,124,0,"Dimensions_01",248,41,10168,TRUE,"",18.28,0.66,0.66
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_6.vds",3,1,124,1,"Dimensions_012",248,41,10168,TRUE,"",18.28,0.08,0.08
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_6.vds",3,2,124,0,"Dimensions_01",248,41,10168,TRUE,"",18.28,0.08,0.08
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_6.vds",3,2,124,1,"Dimensions_012",248,41,10168,TRUE,"",18.28,0.08,0.08
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_future.vds",3,0,20,0,"Dimensions_01",248,248,61504,FALSE,"Invalid header (e.g. unsupported Wavelet compression version) for chunk: Dimensions_012LOD0/0",14.85,14.20,14.23
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_future.vds",3,0,20,1,"Dimensions_012",248,248,61504,FALSE,"Invalid header (e.g. unsupported Wavelet compression version) for chunk: Dimensions_012LOD1/0",14.85,0.28,0.31
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_future.vds",3,1,124,0,"Dimensions_01",248,41,10168,FALSE,"Invalid header (e.g. unsupported Wavelet compression version) for chunk: Dimensions_012LOD0/0",14.85,11.47,11.47
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_future.vds",3,1,124,1,"Dimensions_012",248,41,10168,FALSE,"Invalid header (e.g. unsupported Wavelet compression version) for chunk: Dimensions_012LOD1/0",14.85,0.05,0.05
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_future.vds",3,2,124,0,"Dimensions_01",248,41,10168,FALSE,"Invalid header (e.g. unsupported Wavelet compression version) for chunk: Dimensions_012LOD0/2",14.85,0.08,0.11
+"C:/Development/huespace/tests/data/VDSWaveletVersions\waveletbug_v1_future.vds",3,2,124,1,"Dimensions_012",248,41,10168,FALSE,"Invalid header (e.g. unsupported Wavelet compression version) for chunk: Dimensions_012LOD1/0",14.85,0.13,0.13

@@ -749,9 +749,23 @@ private:
 
         RECT rc;
         GetClientRect(m_hwndPreview, &rc);
-        int maxSize = std::max(rc.right - rc.left, rc.bottom - rc.top);
 
-        LogPreviewFmt("Render: slice=%d, maxSize=%d", m_sliceIndex, maxSize);
+        // Calculate actual bitmap display area (right half of window, minus info/status areas)
+        // The window is split: left half = info panel, right half = bitmap display
+        int totalWidth = rc.right - rc.left;
+        int totalHeight = rc.bottom - rc.top;
+        int bitmapAreaWidth = totalWidth / 2 - 20;  // Right half minus margins
+        int bitmapAreaHeight = totalHeight - 80;     // Minus info and status bars
+        int maxSize = std::max(bitmapAreaWidth, bitmapAreaHeight);
+
+        // Ensure reasonable bounds
+        // Cap at 500px to ensure higher LODs are used for large VDS files
+        // For a 1176px slice: LOD1 gives 588px effective res, which is > 500
+        // This provides good quality while being ~30x faster than full resolution
+        if (maxSize < 100) maxSize = 100;
+        if (maxSize > 500) maxSize = 500;
+
+        LogPreviewFmt("Render: slice=%d, maxSize=%d (window: %dx%d)", m_sliceIndex, maxSize, totalWidth, totalHeight);
 
         // Use RAII pattern to ensure flag is always reset
         m_isRendering = true;

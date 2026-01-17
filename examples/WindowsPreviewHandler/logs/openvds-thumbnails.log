@@ -1,66 +1,42 @@
-[2026-01-17 10:14:11.347] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
-[2026-01-17 10:14:11.347] RenderSlice(dim=2, slice=184, maxSize=256) | 
-[2026-01-17 10:14:11.347] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:11.353] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | 
-[2026-01-17 10:14:11.525] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:11.529] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
-[2026-01-17 10:14:11.545] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
-[2026-01-17 10:14:11.545] RenderSlice(dim=2, slice=184, maxSize=256) | 
-[2026-01-17 10:14:11.545] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:11.545] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | 
-[2026-01-17 10:14:11.731] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:11.731] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
-[2026-01-17 10:14:11.751] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 2250 x 2085 | 
-[2026-01-17 10:14:11.751] RenderSlice(dim=1, slice=1042, maxSize=256) | 
-[2026-01-17 10:14:11.755] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:11.755] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | Requesting 2250x2085 slice... | 
-[2026-01-17 10:14:11.935] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | Requesting 2250x2085 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:11.955] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | Requesting 2250x2085 slice... | Request created, waiting for completion... | Output: 2085 x 2250 | Raw: min=-1.66e+09 max=2.09e+09 mean=1.37e+05 | 
-[2026-01-17 10:14:12.041] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 2501 x 2161 | 
-[2026-01-17 10:14:12.041] RenderSlice(dim=1, slice=1080, maxSize=256) | 
-[2026-01-17 10:14:12.048] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:12.048] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | Requesting 2501x2161 slice... | 
-[2026-01-17 10:14:12.245] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | Requesting 2501x2161 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:12.276] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | Requesting 2501x2161 slice... | Request created, waiting for completion... | Output: 2161 x 2501 | Raw: min=-1.90e+04 max=2.00e+04 mean=-2.79e-01 | 
-[2026-01-17 10:14:12.389] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 463 x 595 | 
-[2026-01-17 10:14:12.389] RenderSlice(dim=1, slice=297, maxSize=256) | 
-[2026-01-17 10:14:12.389] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:12.389] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | Mode: SINGLE_THREADED | Requesting 463x595 slice... | 
-[2026-01-17 10:14:12.389] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | Mode: SINGLE_THREADED | Requesting 463x595 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:12.389] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | Mode: SINGLE_THREADED | Requesting 463x595 slice... | Request created, waiting for completion... | Output: 595 x 463 | Raw: min=-1.00e+11 max=1.13e+03 mean=-7.55e+09 | 
-[2026-01-17 10:14:12.417] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 1401 x 1176 x 895 | 
-[2026-01-17 10:14:12.417] RenderSlice(dim=2, slice=447, maxSize=256) | 
-[2026-01-17 10:14:12.426] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:12.426] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | Requesting 1401x1176 slice... | 
-[2026-01-17 10:14:24.707] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | Requesting 1401x1176 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:24.707] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | Requesting 1401x1176 slice... | Request created, waiting for completion... | Slice: Inline 448/895 | Output: 1176 x 1401 | Raw: min=-2.64e+02 max=2.83e+02 mean=3.65e-04 | 
-[2026-01-17 10:14:24.789] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
-[2026-01-17 10:14:24.789] RenderSlice(dim=2, slice=184, maxSize=2560) | 
-[2026-01-17 10:14:24.789] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:24.789] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | 
-[2026-01-17 10:14:24.974] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:24.974] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
-[2026-01-17 10:14:39.797] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
-[2026-01-17 10:14:39.797] RenderSlice(dim=2, slice=184, maxSize=2560) | 
-[2026-01-17 10:14:39.797] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:39.797] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | 
-[2026-01-17 10:14:39.986] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:39.988] RenderSlice(dim=2, slice=184, maxSize=2560) | VDS (3D) | Dims: 368 x 368 x 368 | Mode: SINGLE_THREADED | Requesting 368x368 slice... | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
-[2026-01-17 10:14:43.026] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 2250 x 2085 | 
-[2026-01-17 10:14:43.026] RenderSlice(dim=1, slice=1042, maxSize=2560) | 
-[2026-01-17 10:14:43.032] RenderSlice(dim=1, slice=1042, maxSize=2560) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:43.032] RenderSlice(dim=1, slice=1042, maxSize=2560) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | Requesting 2250x2085 slice... | 
-[2026-01-17 10:14:43.215] RenderSlice(dim=1, slice=1042, maxSize=2560) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | Requesting 2250x2085 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:43.239] RenderSlice(dim=1, slice=1042, maxSize=2560) | VDS (2D) | Dims: 2250 x 2085 | Mode: SINGLE_THREADED | Requesting 2250x2085 slice... | Request created, waiting for completion... | Output: 2085 x 2250 | Raw: min=-1.66e+09 max=2.09e+09 mean=1.37e+05 | 
-[2026-01-17 10:14:50.421] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 2501 x 2161 | 
-[2026-01-17 10:14:50.421] RenderSlice(dim=1, slice=1080, maxSize=2560) | 
-[2026-01-17 10:14:50.427] RenderSlice(dim=1, slice=1080, maxSize=2560) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:50.427] RenderSlice(dim=1, slice=1080, maxSize=2560) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | Requesting 2501x2161 slice... | 
-[2026-01-17 10:14:50.628] RenderSlice(dim=1, slice=1080, maxSize=2560) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | Requesting 2501x2161 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:14:50.665] RenderSlice(dim=1, slice=1080, maxSize=2560) | VDS (2D) | Dims: 2501 x 2161 | Mode: SINGLE_THREADED | Requesting 2501x2161 slice... | Request created, waiting for completion... | Output: 2161 x 2501 | Raw: min=-1.90e+04 max=2.00e+04 mean=-2.79e-01 | 
-[2026-01-17 10:14:54.894] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 1401 x 1176 x 895 | 
-[2026-01-17 10:14:54.894] RenderSlice(dim=2, slice=447, maxSize=2560) | 
-[2026-01-17 10:14:54.898] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | 
-[2026-01-17 10:14:54.898] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | Requesting 1401x1176 slice... | 
-[2026-01-17 10:15:06.893] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | Requesting 1401x1176 slice... | Request created, waiting for completion... | 
-[2026-01-17 10:15:06.902] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | Mode: SINGLE_THREADED | Requesting 1401x1176 slice... | Request created, waiting for completion... | Slice: Inline 448/895 | Output: 1176 x 1401 | Raw: min=-2.64e+02 max=2.83e+02 mean=3.65e-04 | 
+[2026-01-17 11:11:56.299] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
+[2026-01-17 11:11:56.299] RenderSlice(dim=2, slice=184, maxSize=256) | 
+[2026-01-17 11:11:56.299] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:56.302] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
+[2026-01-17 11:11:56.474] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:11:56.479] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
+[2026-01-17 11:11:56.492] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
+[2026-01-17 11:11:56.492] RenderSlice(dim=2, slice=184, maxSize=256) | 
+[2026-01-17 11:11:56.492] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:56.492] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
+[2026-01-17 11:11:56.665] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:11:56.665] RenderSlice(dim=2, slice=184, maxSize=256) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, full res: 368x368, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
+[2026-01-17 11:11:56.699] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 2250 x 2085 | 
+[2026-01-17 11:11:56.699] RenderSlice(dim=1, slice=1042, maxSize=256) | 
+[2026-01-17 11:11:56.699] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | LOD: 2 (buffer: 563x522, full res: 2250x2085, target: 256 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:56.699] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | LOD: 2 (buffer: 563x522, full res: 2250x2085, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (563x522 voxels)... | 
+[2026-01-17 11:11:56.699] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | LOD: 2 (buffer: 563x522, full res: 2250x2085, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (563x522 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:11:56.699] RenderSlice(dim=1, slice=1042, maxSize=256) | VDS (2D) | Dims: 2250 x 2085 | LOD: 2 (buffer: 563x522, full res: 2250x2085, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (563x522 voxels)... | Request created, waiting for completion... | Output: 522 x 563 | Raw: min=-1.35e+09 max=1.58e+09 mean=1.13e+05 | 
+[2026-01-17 11:11:56.715] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 2501 x 2161 | 
+[2026-01-17 11:11:56.715] RenderSlice(dim=1, slice=1080, maxSize=256) | 
+[2026-01-17 11:11:56.715] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | LOD: 2 (buffer: 626x541, full res: 2501x2161, target: 256 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:56.715] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | LOD: 2 (buffer: 626x541, full res: 2501x2161, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (626x541 voxels)... | 
+[2026-01-17 11:11:56.728] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | LOD: 2 (buffer: 626x541, full res: 2501x2161, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (626x541 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:11:56.730] RenderSlice(dim=1, slice=1080, maxSize=256) | VDS (2D) | Dims: 2501 x 2161 | LOD: 2 (buffer: 626x541, full res: 2501x2161, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (626x541 voxels)... | Request created, waiting for completion... | Output: 541 x 626 | Raw: min=-1.75e+04 max=1.79e+04 mean=-6.72e-01 | 
+[2026-01-17 11:11:56.744] VdsRenderer::Initialize | Opened 2D VDS successfully | Dims: 463 x 595 | 
+[2026-01-17 11:11:56.744] RenderSlice(dim=1, slice=297, maxSize=256) | 
+[2026-01-17 11:11:56.744] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | LOD: 0 (buffer: 463x595, full res: 463x595, target: 256 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:56.744] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | LOD: 0 (buffer: 463x595, full res: 463x595, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (463x595 voxels)... | 
+[2026-01-17 11:11:56.744] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | LOD: 0 (buffer: 463x595, full res: 463x595, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (463x595 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:11:56.744] RenderSlice(dim=1, slice=297, maxSize=256) | VDS (2D) | Dims: 463 x 595 | LOD: 0 (buffer: 463x595, full res: 463x595, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (463x595 voxels)... | Request created, waiting for completion... | Output: 595 x 463 | Raw: min=-1.00e+11 max=1.13e+03 mean=-7.55e+09 | 
+[2026-01-17 11:11:56.760] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 1401 x 1176 x 895 | 
+[2026-01-17 11:11:56.760] RenderSlice(dim=2, slice=447, maxSize=256) | 
+[2026-01-17 11:11:56.760] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 2 (buffer: 351x294, full res: 1401x1176, target: 256 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:56.760] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 2 (buffer: 351x294, full res: 1401x1176, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (351x294 voxels)... | 
+[2026-01-17 11:11:56.935] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 2 (buffer: 351x294, full res: 1401x1176, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (351x294 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:11:56.935] RenderSlice(dim=2, slice=447, maxSize=256) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 2 (buffer: 351x294, full res: 1401x1176, target: 256 px) | Mode: SINGLE_THREADED | Requesting LOD2 slice (351x294 voxels)... | Request created, waiting for completion... | Slice: Inline 448/895 | Output: 294 x 351 | Raw: min=-2.17e+02 max=2.14e+02 mean=-9.26e-02 | 
+[2026-01-17 11:11:59.738] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 1401 x 1176 x 895 | 
+[2026-01-17 11:11:59.738] RenderSlice(dim=2, slice=447, maxSize=2560) | 
+[2026-01-17 11:11:59.740] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 0 (buffer: 1401x1176, full res: 1401x1176, target: 2560 px) | Mode: SINGLE_THREADED | 
+[2026-01-17 11:11:59.740] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 0 (buffer: 1401x1176, full res: 1401x1176, target: 2560 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (1401x1176 voxels)... | 
+[2026-01-17 11:12:11.954] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 0 (buffer: 1401x1176, full res: 1401x1176, target: 2560 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (1401x1176 voxels)... | Request created, waiting for completion... | 
+[2026-01-17 11:12:11.954] RenderSlice(dim=2, slice=447, maxSize=2560) | VDS (3D) | Dims: 1401 x 1176 x 895 | LOD: 0 (buffer: 1401x1176, full res: 1401x1176, target: 2560 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (1401x1176 voxels)... | Request created, waiting for completion... | Slice: Inline 448/895 | Output: 1176 x 1401 | Raw: min=-2.64e+02 max=2.83e+02 mean=3.65e-04 | 

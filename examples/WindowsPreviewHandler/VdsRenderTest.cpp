@@ -54,6 +54,14 @@ double ElapsedMs(TimePoint start, TimePoint end)
     return std::chrono::duration_cast<Duration>(end - start).count();
 }
 
+// Calculate the number of voxels at a given LOD for a range [voxelMin, voxelMax)
+// At LOD 0, returns voxelMax - voxelMin. At LOD 1, returns half that, etc.
+// This matches OpenVDS::GetLODSize() from VolumeData.h
+static inline int GetLODSize(int voxelMin, int voxelMax, int lod)
+{
+    return ((voxelMax - voxelMin - 1) >> lod) + 1;
+}
+
 // ============================================================================
 // Result tracking
 // ============================================================================
@@ -490,14 +498,19 @@ RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
             needsTranspose = (dim0 == 0);
         }
 
-        int width = needsTranspose ? dim1Size : dim0Size;
-        int height = needsTranspose ? dim0Size : dim1Size;
+        // Calculate LOD-sized buffer dimensions
+        // OpenVDS returns smaller buffers at higher LODs: LOD N returns 1/(2^N) resolution per axis
+        int lodDim0Size = GetLODSize(voxelMin[dim0], voxelMax[dim0], params.lod);
+        int lodDim1Size = GetLODSize(voxelMin[dim1], voxelMax[dim1], params.lod);
+
+        int width = needsTranspose ? lodDim1Size : lodDim0Size;
+        int height = needsTranspose ? lodDim0Size : lodDim1Size;
 
         output.width = width;
         output.height = height;
-        output.totalVoxels = (int64_t)dim0Size * dim1Size;
+        output.totalVoxels = (int64_t)lodDim0Size * lodDim1Size;
 
-        std::vector<float> buffer(dim0Size * dim1Size);
+        std::vector<float> buffer(lodDim0Size * lodDim1Size);
 
         // Find available dimension group
         OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
@@ -583,7 +596,7 @@ RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
             {
                 for (int x = 0; x < width; x++)
                 {
-                    float v = buffer[x * dim0Size + y];
+                    float v = buffer[x * lodDim0Size + y];
                     if (!std::isfinite(v)) v = minVal;
                     float normalized = (v - minVal) / range;
                     normalized = std::max(0.0f, std::min(1.0f, normalized));
@@ -597,7 +610,7 @@ RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
             {
                 for (int x = 0; x < width; x++)
                 {
-                    float v = buffer[y * dim0Size + x];
+                    float v = buffer[y * lodDim0Size + x];
                     if (!std::isfinite(v)) v = minVal;
                     float normalized = (v - minVal) / range;
                     normalized = std::max(0.0f, std::min(1.0f, normalized));
@@ -855,12 +868,252 @@ HBITMAP RenderSlice(OpenVDS::VDSHandle vdsHandle, OpenVDS::VolumeDataLayout* lay
 // Main
 // ============================================================================
 
+// ============================================================================
+// LOD Comparison Test - renders same slice at all LODs, scales to maxSize
+// ============================================================================
+
+// Scale a bitmap to fit within maxSize while maintaining aspect ratio
+static HBITMAP ScaleBitmap(HBITMAP hSource, int maxSize)
+{
+    if (!hSource || maxSize <= 0)
+        return hSource;
+
+    BITMAP bm;
+    GetObject(hSource, sizeof(bm), &bm);
+
+    int srcWidth = bm.bmWidth;
+    int srcHeight = bm.bmHeight;
+
+    // If already smaller than maxSize, return as-is
+    if (srcWidth <= maxSize && srcHeight <= maxSize)
+        return hSource;
+
+    // Calculate scaled dimensions maintaining aspect ratio
+    float scale = std::min((float)maxSize / srcWidth, (float)maxSize / srcHeight);
+    int dstWidth = std::max(1, (int)(srcWidth * scale));
+    int dstHeight = std::max(1, (int)(srcHeight * scale));
+
+    // Create destination bitmap
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcSrc = CreateCompatibleDC(hdcScreen);
+    HDC hdcDst = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = dstWidth;
+    bmi.bmiHeader.biHeight = -dstHeight;  // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pBits = nullptr;
+    HBITMAP hDest = CreateDIBSection(hdcDst, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+
+    if (hDest)
+    {
+        HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, hSource);
+        HBITMAP hOldDst = (HBITMAP)SelectObject(hdcDst, hDest);
+
+        // Use high-quality scaling
+        SetStretchBltMode(hdcDst, HALFTONE);
+        SetBrushOrgEx(hdcDst, 0, 0, nullptr);
+        StretchBlt(hdcDst, 0, 0, dstWidth, dstHeight,
+                   hdcSrc, 0, 0, srcWidth, srcHeight, SRCCOPY);
+
+        SelectObject(hdcSrc, hOldSrc);
+        SelectObject(hdcDst, hOldDst);
+
+        // Delete source bitmap and return scaled version
+        DeleteObject(hSource);
+    }
+
+    DeleteDC(hdcSrc);
+    DeleteDC(hdcDst);
+    ReleaseDC(nullptr, hdcScreen);
+
+    // Return scaled bitmap, or original if scaling failed
+    return hDest ? hDest : hSource;
+}
+
+// Calculate optimal LOD for a given slice size and target display size
+// Returns the highest LOD where effective resolution >= targetSize
+int CalculateOptimalLOD(int sliceWidth, int sliceHeight, int targetSize, int maxLOD)
+{
+    int minSliceDim = std::min(sliceWidth, sliceHeight);
+
+    // Find highest LOD that still provides >= targetSize effective resolution
+    for (int lod = maxLOD; lod >= 0; lod--)
+    {
+        int effectiveRes = minSliceDim >> lod;  // Resolution at this LOD
+        if (effectiveRes >= targetSize)
+            return lod;  // This LOD has enough resolution
+    }
+    return 0;  // Fall back to LOD 0
+}
+
+void RunLODComparisonTest(const std::string& filepath, int targetMaxSize)
+{
+    printf("\n================================================================================\n");
+    printf("LOD COMPARISON TEST\n");
+    printf("================================================================================\n");
+    printf("File: %s\n", filepath.c_str());
+    printf("Target display size: %d pixels\n\n", targetMaxSize);
+
+    TimePoint startOpen = Clock::now();
+
+    OpenVDS::Error error;
+    OpenVDS::VDSHandle vdsHandle = OpenVDS::Open(filepath, error);
+
+    double openTimeMs = ElapsedMs(startOpen, Clock::now());
+
+    if (error.code != 0 || !vdsHandle)
+    {
+        printf("ERROR: Failed to open: %s\n", error.string.c_str());
+        return;
+    }
+
+    OpenVDS::VolumeDataLayout* layout = OpenVDS::GetLayout(vdsHandle);
+    if (!layout)
+    {
+        printf("ERROR: Failed to get layout\n");
+        OpenVDS::Close(vdsHandle, error);
+        return;
+    }
+
+    int dimensionality = layout->GetDimensionality();
+    int lodCount = static_cast<int>(layout->GetLayoutDescriptor().GetLODLevels());
+    if (lodCount == 0) lodCount = 1;
+
+    printf("Open time: %.2f ms\n", openTimeMs);
+    printf("Dimensionality: %d\n", dimensionality);
+    printf("LOD count: %d\n\n", lodCount);
+
+    // Print dimensions
+    printf("Dimensions:\n");
+    for (int d = 0; d < dimensionality; d++)
+    {
+        auto axis = layout->GetAxisDescriptor(d);
+        printf("  [%d] %s: %d samples\n", d, axis.GetName(), layout->GetDimensionNumSamples(d));
+    }
+    printf("\n");
+
+    // Get slice dimensions (dim0 x dim1)
+    int dim0Size = layout->GetDimensionNumSamples(0);
+    int dim1Size = layout->GetDimensionNumSamples(1);
+    int sliceWidth = dim1Size;  // After transpose: dim1 is X (width)
+    int sliceHeight = dim0Size; // After transpose: dim0 is Y (height)
+
+    printf("Slice size: %d x %d (%d voxels)\n", sliceWidth, sliceHeight, sliceWidth * sliceHeight);
+
+    // Calculate optimal LOD
+    int optimalLOD = CalculateOptimalLOD(sliceWidth, sliceHeight, targetMaxSize, lodCount - 1);
+    printf("Calculated optimal LOD for %d px target: LOD %d\n\n", targetMaxSize, optimalLOD);
+
+    // Set up render parameters
+    int sliceDim = (dimensionality >= 3) ? 2 : 0;
+    int sliceIndex = (dimensionality >= 3) ? layout->GetDimensionNumSamples(2) / 2 : 0;
+
+    printf("Slicing dimension %d at index %d\n\n", sliceDim, sliceIndex);
+
+    OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(vdsHandle);
+
+    // Test each LOD
+    printf("%-6s  %-12s  %-10s  %-12s  %-10s  %-s\n",
+           "LOD", "Status", "EffRes", "RenderTime", "ScaledSize", "Output");
+    printf("------  ------------  ----------  ------------  ----------  ---------------\n");
+
+    for (int lod = 0; lod < lodCount; lod++)
+    {
+        // Check availability
+        OpenVDS::DimensionsND dimGroup = (dimensionality == 2) ? OpenVDS::Dimensions_01 : OpenVDS::Dimensions_012;
+        auto lodStatus = accessManager.GetVDSProduceStatus(dimGroup, lod, 0);
+
+        const char* statusStr = "Unknown";
+        bool available = false;
+        switch (lodStatus)
+        {
+        case OpenVDS::VDSProduceStatus::Normal:
+            statusStr = "Normal";
+            available = true;
+            break;
+        case OpenVDS::VDSProduceStatus::Remapped:
+            statusStr = "Remapped";
+            available = true;
+            break;
+        case OpenVDS::VDSProduceStatus::Unavailable:
+            statusStr = "Unavailable";
+            break;
+        }
+
+        int effectiveRes = std::min(sliceWidth, sliceHeight) >> lod;
+
+        if (!available)
+        {
+            printf("LOD%d    %-12s  %-10s  %-12s  %-10s  %s\n",
+                   lod, statusStr, "-", "-", "-", "(skipped)");
+            continue;
+        }
+
+        // Render at this LOD
+        RenderParams params;
+        params.dimension = sliceDim;
+        params.sliceIndex = sliceIndex;
+        params.lod = lod;
+        params.quiet = true;
+
+        RenderOutput output = RenderSliceWithTiming(vdsHandle, layout, params);
+
+        if (!output.success)
+        {
+            printf("LOD%d    %-12s  %4d px     FAILED       -           %s\n",
+                   lod, statusStr, effectiveRes, output.errorMessage.c_str());
+            continue;
+        }
+
+        // Scale to target size
+        HBITMAP scaledBitmap = ScaleBitmap(output.bitmap, targetMaxSize);
+
+        BITMAP bm;
+        GetObject(scaledBitmap, sizeof(bm), &bm);
+
+        // Generate output filename
+        char outFilename[64];
+        sprintf_s(outFilename, "lod_compare_%d.bmp", lod);
+        wchar_t wOutFilename[64];
+        MultiByteToWideChar(CP_UTF8, 0, outFilename, -1, wOutFilename, 64);
+
+        bool saved = SaveBitmapToFile(scaledBitmap, wOutFilename);
+        DeleteObject(scaledBitmap);
+
+        char sizeStr[32];
+        sprintf_s(sizeStr, "%dx%d", bm.bmWidth, bm.bmHeight);
+
+        printf("LOD%d    %-12s  %4d px     %8.2f ms  %-10s  %s%s\n",
+               lod, statusStr, effectiveRes, output.renderTimeMs, sizeStr,
+               saved ? outFilename : "(save failed)",
+               (lod == optimalLOD) ? " <-- OPTIMAL" : "");
+    }
+
+    printf("\n");
+    printf("Legend:\n");
+    printf("  EffRes = Effective resolution at this LOD (data is upsampled to full res)\n");
+    printf("  OPTIMAL = Calculated optimal LOD for target size %d px\n", targetMaxSize);
+    printf("\nCompare output files to verify visual quality:\n");
+    for (int lod = 0; lod < lodCount; lod++)
+    {
+        printf("  lod_compare_%d.bmp\n", lod);
+    }
+
+    OpenVDS::Close(vdsHandle, error);
+}
+
 void PrintUsage()
 {
     printf("VDS Render Test Harness\n\n");
     printf("Usage:\n");
     printf("  VdsRenderTest.exe <input.vds> [output.bmp] [dimension] [sliceIndex]\n");
     printf("  VdsRenderTest.exe --benchmark <folder> [--output report.csv] [--verbose]\n");
+    printf("  VdsRenderTest.exe --lod-compare <input.vds> [maxSize]\n");
     printf("\n");
     printf("Single file mode:\n");
     printf("  input.vds   - Path to VDS file\n");
@@ -872,6 +1125,11 @@ void PrintUsage()
     printf("  --benchmark <folder>  - Recursively process all .vds files in folder\n");
     printf("  --output <file.csv>   - Write results to CSV file (default: benchmark_results.csv)\n");
     printf("  --verbose             - Show detailed output for each render\n");
+    printf("\n");
+    printf("LOD comparison mode:\n");
+    printf("  --lod-compare <vds>   - Render same slice at all LODs, scale to maxSize\n");
+    printf("  maxSize               - Target display size in pixels (default: 400)\n");
+    printf("                          Outputs: lod_compare_0.bmp, lod_compare_1.bmp, etc.\n");
     printf("\n");
     printf("Benchmark tests each VDS with:\n");
     printf("  - Different slice dimensions (for 3D+ data)\n");
@@ -887,8 +1145,32 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    // Check for benchmark mode
+    // Check for LOD comparison mode
     std::wstring arg1 = argv[1];
+    if (arg1 == L"--lod-compare" || arg1 == L"--lod")
+    {
+        if (argc < 3)
+        {
+            printf("ERROR: --lod-compare requires a VDS file path\n");
+            PrintUsage();
+            return 1;
+        }
+
+        char vdsPath[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, argv[2], -1, vdsPath, MAX_PATH, nullptr, nullptr);
+
+        int maxSize = 400;  // Default target size
+        if (argc > 3)
+        {
+            maxSize = _wtoi(argv[3]);
+            if (maxSize <= 0) maxSize = 400;
+        }
+
+        RunLODComparisonTest(vdsPath, maxSize);
+        return 0;
+    }
+
+    // Check for benchmark mode
     if (arg1 == L"--benchmark" || arg1 == L"-b")
     {
         if (argc < 3)
