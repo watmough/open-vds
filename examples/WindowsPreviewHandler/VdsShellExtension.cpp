@@ -364,6 +364,21 @@ public:
             m_lastError = L"Seek failed";
         }
 
+        // Wait for any pending render on old renderer before destroying it
+        // This prevents orphaned VDS requests when switching files
+        if (m_renderer)
+        {
+            m_renderer->WaitForPendingRender();
+        }
+
+        // Clear cached bitmap when switching files
+        if (m_cachedBitmap)
+        {
+            DeleteObject(m_cachedBitmap);
+            m_cachedBitmap = nullptr;
+        }
+        m_cachedSliceIndex = -1;
+
         // Create renderer
         m_renderer = std::make_unique<VdsRenderer>();
         m_renderer->SetLogFile(GetLogFilePath("openvds-previewpane.log").c_str());
@@ -466,6 +481,12 @@ public:
         {
             DeleteObject(m_cachedBitmap);
             m_cachedBitmap = nullptr;
+        }
+        m_cachedSliceIndex = -1;
+        // Wait for any pending render before destroying renderer
+        if (m_renderer)
+        {
+            m_renderer->WaitForPendingRender();
         }
         m_renderer.reset();
         SafeRelease(&m_stream);
@@ -598,18 +619,12 @@ public:
             if (pt.x > midX && m_renderer)
             {
                 // Right side: scroll through slices
+                // Don't delete cached bitmap here - let OnPaint update it
+                // This keeps the old slice visible while rendering the new one
                 int maxSlice = m_renderer->GetSliceCount(m_dimension) - 1;
                 int newSlice = m_sliceIndex - delta;
                 newSlice = std::max(0, std::min(maxSlice, newSlice));
-                if (newSlice != m_sliceIndex)
-                {
-                    m_sliceIndex = newSlice;
-                    if (m_cachedBitmap)
-                    {
-                        DeleteObject(m_cachedBitmap);
-                        m_cachedBitmap = nullptr;
-                    }
-                }
+                m_sliceIndex = newSlice;
             }
             else
             {
@@ -629,6 +644,7 @@ public:
             {
                 DeleteObject(m_cachedBitmap);
                 m_cachedBitmap = nullptr;
+                m_cachedSliceIndex = -1;
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -641,6 +657,7 @@ public:
             {
                 DeleteObject(m_cachedBitmap);
                 m_cachedBitmap = nullptr;
+                m_cachedSliceIndex = -1;
             }
             return 0;
         }
@@ -660,8 +677,10 @@ private:
     COLORREF m_bgColor;
     COLORREF m_textColor;
     HBITMAP m_cachedBitmap;
+    int m_cachedSliceIndex = -1;  // Track which slice the cached bitmap represents
     std::unique_ptr<VdsRenderer> m_renderer;
     std::wstring m_lastError;  // For diagnostic display
+    bool m_isRendering = false;  // Re-entrancy guard for COM message pumping
 
     // Create a test pattern bitmap (for debugging)
     HBITMAP CreateTestBitmap(int width, int height, int sliceIndex)
@@ -708,10 +727,12 @@ private:
 
     void UpdateCachedBitmap()
     {
-        if (m_cachedBitmap)
+        // Re-entrancy guard: COM may pump messages during IStream::Read(),
+        // causing WM_PAINT to fire while we're mid-render. Skip nested calls.
+        if (m_isRendering)
         {
-            DeleteObject(m_cachedBitmap);
-            m_cachedBitmap = nullptr;
+            LogPreview("Skipping re-entrant render");
+            return;
         }
 
         if (!m_renderer)
@@ -720,12 +741,26 @@ private:
             return;
         }
 
+        // Check if we need to re-render (slice changed or no bitmap)
+        if (m_cachedBitmap && m_cachedSliceIndex == m_sliceIndex)
+        {
+            return;  // Already have the right slice cached
+        }
+
         RECT rc;
         GetClientRect(m_hwndPreview, &rc);
         int maxSize = std::max(rc.right - rc.left, rc.bottom - rc.top);
 
         LogPreviewFmt("Render: slice=%d, maxSize=%d", m_sliceIndex, maxSize);
-        m_cachedBitmap = m_renderer->RenderSlice(m_dimension, m_sliceIndex, maxSize);
+
+        // Use RAII pattern to ensure flag is always reset
+        m_isRendering = true;
+        struct RenderGuard {
+            bool& flag;
+            ~RenderGuard() { flag = false; }
+        } guard{m_isRendering};
+
+        HBITMAP newBitmap = m_renderer->RenderSlice(m_dimension, m_sliceIndex, maxSize);
 
         // Copy VdsRenderer debug messages to the global debug display
         const auto& vdsDebug = m_renderer->GetLastRenderDebugMessages();
@@ -736,8 +771,16 @@ private:
             LogPreviewFmt("[VDS] %s", narrowBuf);
         }
 
-        if (m_cachedBitmap)
+        if (newBitmap)
         {
+            // Only delete old bitmap after new one is ready (reduces flicker)
+            if (m_cachedBitmap)
+            {
+                DeleteObject(m_cachedBitmap);
+            }
+            m_cachedBitmap = newBitmap;
+            m_cachedSliceIndex = m_sliceIndex;
+
             BITMAP bm;
             GetObject(m_cachedBitmap, sizeof(bm), &bm);
             wchar_t buf[64];
@@ -747,6 +790,7 @@ private:
         else
         {
             m_lastError = L"Render failed";
+            // Keep old bitmap visible even if new render fails
         }
     }
 
@@ -803,11 +847,8 @@ private:
         FillRect(hdc, &leftRect, hbrWhite);
         DeleteObject(hbrWhite);
 
-        // Right panel: VDS info (light gray background)
+        // Right panel bounds (don't clear - bitmap will be drawn over it)
         RECT rightRect = { midX + 2, rc.top, rc.right, rc.bottom };
-        HBRUSH hbrLight = CreateSolidBrush(RGB(245, 245, 245));
-        FillRect(hdc, &rightRect, hbrLight);
-        DeleteObject(hbrLight);
 
         // Divider
         RECT divider = { midX - 2, rc.top, midX + 2, rc.bottom };
@@ -821,19 +862,19 @@ private:
         // Right panel layout: VDS info on top, bitmap in middle, status at bottom
         if (m_renderer)
         {
-            // Update cached bitmap if needed
-            if (!m_cachedBitmap)
-            {
-                UpdateCachedBitmap();
-            }
+            // Update cached bitmap if needed (checks slice index internally)
+            UpdateCachedBitmap();
 
             int infoHeight = 220;  // Height for VDS info section
             int statusHeight = 28;
             int bitmapAreaTop = rightRect.top + infoHeight;
             int bitmapAreaBottom = rightRect.bottom - statusHeight;
 
-            // Top: VDS info panel
+            // Top: VDS info panel (fill just this area)
             RECT infoRect = { rightRect.left, rightRect.top, rightRect.right, rightRect.top + infoHeight };
+            HBRUSH hbrInfo = CreateSolidBrush(RGB(245, 245, 245));
+            FillRect(hdc, &infoRect, hbrInfo);
+            DeleteObject(hbrInfo);
             DrawVdsInfoPanel(hdc, infoRect);
 
             // Separator line

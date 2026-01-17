@@ -68,6 +68,9 @@ public:
     // Get last render debug messages (for on-screen display)
     const std::vector<std::wstring>& GetLastRenderDebugMessages() const { return m_lastRenderDebugMessages; }
 
+    // Wait for any in-progress render to complete before destruction
+    // Call this before destroying the renderer to avoid orphaned requests
+    void WaitForPendingRender() { std::lock_guard<std::mutex> lock(m_renderMutex); }
 
 private:
     std::vector<std::wstring> m_lastRenderDebugMessages;
