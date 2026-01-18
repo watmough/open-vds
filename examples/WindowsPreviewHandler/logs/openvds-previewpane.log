@@ -1,162 +1,20 @@
-[2026-01-17 20:21:53.190] Stream: 12211826 bytes
-[2026-01-17 20:21:53.200] VdsRenderer::Initialize | Opened 3D VDS successfully | Dims: 368 x 368 x 368 | 
-[2026-01-17 20:21:53.200] VDS OK: 3D, slice 185/368
-[2026-01-17 20:21:53.206] Render: slice=184, maxSize=500 (window: 900x800)
-[2026-01-17 20:21:53.211] RenderSlice(dim=2, slice=184, maxSize=500) | 
-[2026-01-17 20:21:53.211] RenderSlice(dim=2, slice=184, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:21:53.213] RenderSlice(dim=2, slice=184, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:21:53.216] RenderSlice(dim=2, slice=184, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 184, 0, 0, 0] | voxelMax: [368, 368, 185, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:21:53.584] RenderSlice(dim=2, slice=184, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 184, 0, 0, 0] | voxelMax: [368, 368, 185, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:21:53.592] RenderSlice(dim=2, slice=184, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 184, 0, 0, 0] | voxelMax: [368, 368, 185, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 185/368 | Output: 368 x 368 | Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02 | 
-[2026-01-17 20:21:53.602] [VDS] RenderSlice(dim=2, slice=184, maxSize=500)
-[2026-01-17 20:21:53.602] [VDS] VDS (3D)
-[2026-01-17 20:21:53.602] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:21:53.602] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:21:53.602] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:21:53.602] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:21:53.602] [VDS] voxelMin: [0, 0, 184, 0, 0, 0]
-[2026-01-17 20:21:53.602] [VDS] voxelMax: [368, 368, 185, 1, 1, 1]
-[2026-01-17 20:21:53.607] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:21:53.607] [VDS] Request created, waiting for completion...
-[2026-01-17 20:21:53.607] [VDS] Slice: Inline 185/368
-[2026-01-17 20:21:53.607] [VDS] Output: 368 x 368
-[2026-01-17 20:21:53.607] [VDS] Raw: min=-2.84e+02 max=2.72e+02 mean=-2.99e-02
-[2026-01-17 20:21:53.607] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:21:53.607] [VDS] Render: 391.4ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:12.317] Render: slice=174, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:12.317] RenderSlice(dim=2, slice=174, maxSize=500) | 
-[2026-01-17 20:22:12.317] RenderSlice(dim=2, slice=174, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:12.317] RenderSlice(dim=2, slice=174, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:12.317] RenderSlice(dim=2, slice=174, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 174, 0, 0, 0] | voxelMax: [368, 368, 175, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:22:12.317] RenderSlice(dim=2, slice=174, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 174, 0, 0, 0] | voxelMax: [368, 368, 175, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:22:12.327] RenderSlice(dim=2, slice=174, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 174, 0, 0, 0] | voxelMax: [368, 368, 175, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 175/368 | Output: 368 x 368 | Raw: min=-3.15e+02 max=2.57e+02 mean=4.98e-02 | 
-[2026-01-17 20:22:12.368] [VDS] RenderSlice(dim=2, slice=174, maxSize=500)
-[2026-01-17 20:22:12.368] [VDS] VDS (3D)
-[2026-01-17 20:22:12.368] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:22:12.378] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:22:12.378] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:22:12.378] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:22:12.378] [VDS] voxelMin: [0, 0, 174, 0, 0, 0]
-[2026-01-17 20:22:12.378] [VDS] voxelMax: [368, 368, 175, 1, 1, 1]
-[2026-01-17 20:22:12.378] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:22:12.378] [VDS] Request created, waiting for completion...
-[2026-01-17 20:22:12.378] [VDS] Slice: Inline 175/368
-[2026-01-17 20:22:12.378] [VDS] Output: 368 x 368
-[2026-01-17 20:22:12.378] [VDS] Raw: min=-3.15e+02 max=2.57e+02 mean=4.98e-02
-[2026-01-17 20:22:12.378] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:22:12.378] [VDS] Render: 48.7ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:12.927] Render: slice=164, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:12.927] RenderSlice(dim=2, slice=164, maxSize=500) | 
-[2026-01-17 20:22:12.929] RenderSlice(dim=2, slice=164, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:12.929] RenderSlice(dim=2, slice=164, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:12.931] RenderSlice(dim=2, slice=164, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 164, 0, 0, 0] | voxelMax: [368, 368, 165, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:22:12.931] RenderSlice(dim=2, slice=164, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 164, 0, 0, 0] | voxelMax: [368, 368, 165, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:22:12.933] RenderSlice(dim=2, slice=164, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 164, 0, 0, 0] | voxelMax: [368, 368, 165, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 165/368 | Output: 368 x 368 | Raw: min=-2.35e+02 max=2.76e+02 mean=-1.77e-02 | 
-[2026-01-17 20:22:12.937] [VDS] RenderSlice(dim=2, slice=164, maxSize=500)
-[2026-01-17 20:22:12.937] [VDS] VDS (3D)
-[2026-01-17 20:22:12.937] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:22:12.937] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:22:12.937] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:22:12.937] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:22:12.937] [VDS] voxelMin: [0, 0, 164, 0, 0, 0]
-[2026-01-17 20:22:12.937] [VDS] voxelMax: [368, 368, 165, 1, 1, 1]
-[2026-01-17 20:22:12.937] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:22:12.937] [VDS] Request created, waiting for completion...
-[2026-01-17 20:22:12.937] [VDS] Slice: Inline 165/368
-[2026-01-17 20:22:12.937] [VDS] Output: 368 x 368
-[2026-01-17 20:22:12.937] [VDS] Raw: min=-2.35e+02 max=2.76e+02 mean=-1.77e-02
-[2026-01-17 20:22:12.941] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:22:12.941] [VDS] Render: 8.9ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:13.474] Render: slice=154, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:13.474] RenderSlice(dim=2, slice=154, maxSize=500) | 
-[2026-01-17 20:22:13.474] RenderSlice(dim=2, slice=154, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:13.474] RenderSlice(dim=2, slice=154, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:13.474] RenderSlice(dim=2, slice=154, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 154, 0, 0, 0] | voxelMax: [368, 368, 155, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:22:13.477] RenderSlice(dim=2, slice=154, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 154, 0, 0, 0] | voxelMax: [368, 368, 155, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:22:13.490] RenderSlice(dim=2, slice=154, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 154, 0, 0, 0] | voxelMax: [368, 368, 155, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 155/368 | Output: 368 x 368 | Raw: min=-2.61e+02 max=3.36e+02 mean=1.18e-02 | 
-[2026-01-17 20:22:13.508] [VDS] RenderSlice(dim=2, slice=154, maxSize=500)
-[2026-01-17 20:22:13.508] [VDS] VDS (3D)
-[2026-01-17 20:22:13.508] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:22:13.508] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:22:13.508] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:22:13.508] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:22:13.508] [VDS] voxelMin: [0, 0, 154, 0, 0, 0]
-[2026-01-17 20:22:13.508] [VDS] voxelMax: [368, 368, 155, 1, 1, 1]
-[2026-01-17 20:22:13.508] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:22:13.508] [VDS] Request created, waiting for completion...
-[2026-01-17 20:22:13.508] [VDS] Slice: Inline 155/368
-[2026-01-17 20:22:13.508] [VDS] Output: 368 x 368
-[2026-01-17 20:22:13.508] [VDS] Raw: min=-2.61e+02 max=3.36e+02 mean=1.18e-02
-[2026-01-17 20:22:13.508] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:22:13.508] [VDS] Render: 34.9ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:14.043] Render: slice=144, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:14.043] RenderSlice(dim=2, slice=144, maxSize=500) | 
-[2026-01-17 20:22:14.043] RenderSlice(dim=2, slice=144, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:14.043] RenderSlice(dim=2, slice=144, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:14.043] RenderSlice(dim=2, slice=144, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 144, 0, 0, 0] | voxelMax: [368, 368, 145, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:22:14.043] RenderSlice(dim=2, slice=144, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 144, 0, 0, 0] | voxelMax: [368, 368, 145, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:22:14.049] RenderSlice(dim=2, slice=144, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 144, 0, 0, 0] | voxelMax: [368, 368, 145, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 145/368 | Output: 368 x 368 | Raw: min=-2.64e+02 max=3.00e+02 mean=3.83e-02 | 
-[2026-01-17 20:22:14.053] [VDS] RenderSlice(dim=2, slice=144, maxSize=500)
-[2026-01-17 20:22:14.053] [VDS] VDS (3D)
-[2026-01-17 20:22:14.053] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:22:14.053] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:22:14.053] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:22:14.053] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:22:14.053] [VDS] voxelMin: [0, 0, 144, 0, 0, 0]
-[2026-01-17 20:22:14.053] [VDS] voxelMax: [368, 368, 145, 1, 1, 1]
-[2026-01-17 20:22:14.053] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:22:14.053] [VDS] Request created, waiting for completion...
-[2026-01-17 20:22:14.053] [VDS] Slice: Inline 145/368
-[2026-01-17 20:22:14.053] [VDS] Output: 368 x 368
-[2026-01-17 20:22:14.053] [VDS] Raw: min=-2.64e+02 max=3.00e+02 mean=3.83e-02
-[2026-01-17 20:22:14.053] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:22:14.053] [VDS] Render: 7.5ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:14.600] Render: slice=134, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:14.600] RenderSlice(dim=2, slice=134, maxSize=500) | 
-[2026-01-17 20:22:14.600] RenderSlice(dim=2, slice=134, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:14.600] RenderSlice(dim=2, slice=134, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:14.600] RenderSlice(dim=2, slice=134, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 134, 0, 0, 0] | voxelMax: [368, 368, 135, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:22:14.600] RenderSlice(dim=2, slice=134, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 134, 0, 0, 0] | voxelMax: [368, 368, 135, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:22:14.608] RenderSlice(dim=2, slice=134, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 134, 0, 0, 0] | voxelMax: [368, 368, 135, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 135/368 | Output: 368 x 368 | Raw: min=-2.93e+02 max=2.48e+02 mean=5.19e-04 | 
-[2026-01-17 20:22:14.613] [VDS] RenderSlice(dim=2, slice=134, maxSize=500)
-[2026-01-17 20:22:14.613] [VDS] VDS (3D)
-[2026-01-17 20:22:14.613] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:22:14.613] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:22:14.613] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:22:14.613] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:22:14.613] [VDS] voxelMin: [0, 0, 134, 0, 0, 0]
-[2026-01-17 20:22:14.613] [VDS] voxelMax: [368, 368, 135, 1, 1, 1]
-[2026-01-17 20:22:14.613] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:22:14.613] [VDS] Request created, waiting for completion...
-[2026-01-17 20:22:14.613] [VDS] Slice: Inline 135/368
-[2026-01-17 20:22:14.613] [VDS] Output: 368 x 368
-[2026-01-17 20:22:14.613] [VDS] Raw: min=-2.93e+02 max=2.48e+02 mean=5.19e-04
-[2026-01-17 20:22:14.613] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:22:14.613] [VDS] Render: 12.2ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:15.148] Render: slice=124, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:15.148] RenderSlice(dim=2, slice=124, maxSize=500) | 
-[2026-01-17 20:22:15.148] RenderSlice(dim=2, slice=124, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:15.148] RenderSlice(dim=2, slice=124, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:15.148] RenderSlice(dim=2, slice=124, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 124, 0, 0, 0] | voxelMax: [368, 368, 125, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
-[2026-01-17 20:22:15.156] RenderSlice(dim=2, slice=124, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 124, 0, 0, 0] | voxelMax: [368, 368, 125, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | 
-[2026-01-17 20:22:15.161] RenderSlice(dim=2, slice=124, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 124, 0, 0, 0] | voxelMax: [368, 368, 125, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | Request created, waiting for completion... | Slice: Inline 125/368 | Output: 368 x 368 | Raw: min=-2.74e+02 max=2.88e+02 mean=3.17e-02 | 
-[2026-01-17 20:22:15.177] [VDS] RenderSlice(dim=2, slice=124, maxSize=500)
-[2026-01-17 20:22:15.177] [VDS] VDS (3D)
-[2026-01-17 20:22:15.177] [VDS] Dims: 368 x 368 x 368
-[2026-01-17 20:22:15.177] [VDS] LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px)
-[2026-01-17 20:22:15.187] [VDS] Mode: SINGLE_THREADED
-[2026-01-17 20:22:15.187] [VDS] Requesting LOD0 slice (368x368 voxels)...
-[2026-01-17 20:22:15.187] [VDS] voxelMin: [0, 0, 124, 0, 0, 0]
-[2026-01-17 20:22:15.187] [VDS] voxelMax: [368, 368, 125, 1, 1, 1]
-[2026-01-17 20:22:15.187] [VDS] LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected)
-[2026-01-17 20:22:15.187] [VDS] Request created, waiting for completion...
-[2026-01-17 20:22:15.187] [VDS] Slice: Inline 125/368
-[2026-01-17 20:22:15.187] [VDS] Output: 368 x 368
-[2026-01-17 20:22:15.187] [VDS] Raw: min=-2.74e+02 max=2.88e+02 mean=3.17e-02
-[2026-01-17 20:22:15.187] [VDS] Saved: C:\Users\jonathan\AppData\LocalLow\Temp\openvds-preview-slice.bmp
-[2026-01-17 20:22:15.187] [VDS] Render: 25.5ms, LOD 0â†’0 (stable)
-[2026-01-17 20:22:15.738] Render: slice=114, maxSize=500 (window: 900x800)
-[2026-01-17 20:22:15.738] RenderSlice(dim=2, slice=114, maxSize=500) | 
-[2026-01-17 20:22:15.738] RenderSlice(dim=2, slice=114, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | 
-[2026-01-17 20:22:15.738] RenderSlice(dim=2, slice=114, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | 
-[2026-01-17 20:22:15.738] RenderSlice(dim=2, slice=114, maxSize=500) | VDS (3D) | Dims: 368 x 368 x 368 | LOD: 0 (buffer: 368x368, fullResDim: -1, full res: 368x368, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (368x368 voxels)... | voxelMin: [0, 0, 114, 0, 0, 0] | voxelMax: [368, 368, 115, 1, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 135424 floats (541696 expected) | 
+[2026-01-18 04:58:41.756] Stream: 2286430217 bytes
+[2026-01-18 04:58:41.777] VdsRenderer::Initialize | Opened 4D VDS successfully | Dims: 1150 x 13 x 273 x 601 | 
+[2026-01-18 04:58:41.777] VDS OK: 4D, slice 301/601
+[2026-01-18 04:58:41.793] Render: slice=300, maxSize=500 (window: 900x800)
+[2026-01-18 04:58:41.793] RenderSlice(dim=3, slice=300, maxSize=500) | 
+[2026-01-18 04:58:41.793] RenderSlice(dim=3, slice=300, maxSize=500) | VDS (4D) | Dims: 1150 x 13 x 273 x 601 | LOD: 0 (buffer: 1150x13, fullResDim: -1, full res: 1150x13, target: 500 px) | Mode: SINGLE_THREADED | 
+[2026-01-18 04:58:41.793] RenderSlice(dim=3, slice=300, maxSize=500) | VDS (4D) | Dims: 1150 x 13 x 273 x 601 | LOD: 0 (buffer: 1150x13, fullResDim: -1, full res: 1150x13, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (1150x13 voxels)... | 
+[2026-01-18 04:58:41.798] RenderSlice(dim=3, slice=300, maxSize=500) | VDS (4D) | Dims: 1150 x 13 x 273 x 601 | LOD: 0 (buffer: 1150x13, fullResDim: -1, full res: 1150x13, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (1150x13 voxels)... | voxelMin: [0, 0, 300, 300, 0, 0] | voxelMax: [1150, 13, 301, 301, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 14950 floats (59800 expected) | 
+[2026-01-18 04:58:41.798] RenderSlice(dim=3, slice=300, maxSize=500) | VDS (4D) | Dims: 1150 x 13 x 273 x 601 | LOD: 0 (buffer: 1150x13, fullResDim: -1, full res: 1150x13, target: 500 px) | Mode: SINGLE_THREADED | Requesting LOD0 slice (1150x13 voxels)... | voxelMin: [0, 0, 300, 300, 0, 0] | voxelMax: [1150, 13, 301, 301, 1, 1] | LOD: 0, fullResDim: -1, bufferSize: 14950 floats (59800 expected) | EXCEPTION | Illegal volume subset, dimension 2 min = 300, max = 301 | 
+[2026-01-18 04:58:41.798] [VDS] RenderSlice(dim=3, slice=300, maxSize=500)
+[2026-01-18 04:58:41.798] [VDS] VDS (4D)
+[2026-01-18 04:58:41.802] [VDS] Dims: 1150 x 13 x 273 x 601
+[2026-01-18 04:58:41.802] [VDS] LOD: 0 (buffer: 1150x13, fullResDim: -1, full res: 1150x13, target: 500 px)
+[2026-01-18 04:58:41.802] [VDS] Mode: SINGLE_THREADED
+[2026-01-18 04:58:41.802] [VDS] Requesting LOD0 slice (1150x13 voxels)...
+[2026-01-18 04:58:41.802] [VDS] voxelMin: [0, 0, 300, 300, 0, 0]
+[2026-01-18 04:58:41.802] [VDS] voxelMax: [1150, 13, 301, 301, 1, 1]
+[2026-01-18 04:58:41.802] [VDS] LOD: 0, fullResDim: -1, bufferSize: 14950 floats (59800 expected)
+[2026-01-18 04:58:41.802] [VDS] EXCEPTION
+[2026-01-18 04:58:41.802] [VDS] Illegal volume subset, dimension 2 min = 300, max = 301

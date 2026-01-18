@@ -157,7 +157,7 @@ static inline int GetLODSize(int voxelMin, int voxelMax, int lod)
 // Data validation thresholds
 static constexpr float MAX_INVALID_RATIO = 0.5f;    // Warn if more than 50% NaN/Inf values
 static constexpr float MIN_VALUE_VARIANCE = 1e-10f; // Minimum variance to be considered valid data
-static constexpr float MAX_VALID_MAGNITUDE = 1e30f; // Filter values with |v| > this magnitude
+static constexpr float MAX_VALID_MAGNITUDE = 1e10f; // Filter values with |v| > this magnitude
 
 // Color mapping parameters - scale data to use mean +/- TRANSFER_FUNCTION_GAIN * stddev
 static constexpr float TRANSFER_FUNCTION_GAIN = 4.0f;  // Number of std deviations for full color range
@@ -907,19 +907,21 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         voxelMin[1] = 0;
         voxelMax[1] = dim1Size;
 
-        // For dimensions 2 and above, fix at sliceIndex (or midpoint for dim3+)
-        // sliceOnDimension parameter is used for dim2, sliceIndex selects which slice
-        if (dimensionality >= 3)
+        // For dimensions 2 and above:
+        // - The sliceOnDimension parameter specifies which dimension to slice
+        // - All other dimensions (2 through dimensionality-1) are fixed at midpoint
+        // - sliceOnDimension is set to sliceIndex
+        for (int dim = 2; dim < dimensionality; dim++)
         {
-            // Dim2 is the primary slice dimension
-            voxelMin[2] = sliceIndex;
-            voxelMax[2] = sliceIndex + 1;
-        }
-        if (dimensionality >= 4)
-        {
-            // Dim3+ fixed at midpoint
-            for (int dim = 3; dim < dimensionality; dim++)
+            if (dim == sliceOnDimension)
             {
+                // This is the dimension we're slicing on
+                voxelMin[dim] = sliceIndex;
+                voxelMax[dim] = sliceIndex + 1;
+            }
+            else
+            {
+                // Other dimensions fixed at midpoint
                 int midpoint = m_layout->GetDimensionNumSamples(dim) / 2;
                 voxelMin[dim] = midpoint;
                 voxelMax[dim] = midpoint + 1;
@@ -1186,8 +1188,69 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             }
         }
 
-        // Create colorized bitmap and scale to requested size
+        // Create colorized bitmap
         HBITMAP hBitmap = CreateColorizedBitmap(grayscale.data(), width, height);
+
+        // Apply aspect ratio limiting (max 5:1) to avoid very thin/short renders
+        constexpr float MAX_ASPECT_RATIO = 5.0f;
+        if (hBitmap && width > 0 && height > 0)
+        {
+            float aspectRatio = static_cast<float>(std::max(width, height)) /
+                                static_cast<float>(std::min(width, height));
+            if (aspectRatio > MAX_ASPECT_RATIO)
+            {
+                int newWidth = width;
+                int newHeight = height;
+                if (width > height)
+                {
+                    // Too wide - increase height
+                    newHeight = width / static_cast<int>(MAX_ASPECT_RATIO);
+                }
+                else
+                {
+                    // Too tall - increase width
+                    newWidth = height / static_cast<int>(MAX_ASPECT_RATIO);
+                }
+
+                // Create scaled bitmap using StretchBlt
+                HDC hdcScreen = GetDC(nullptr);
+                HDC hdcSrc = CreateCompatibleDC(hdcScreen);
+                HDC hdcDst = CreateCompatibleDC(hdcScreen);
+
+                BITMAPINFO bmi = {};
+                bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                bmi.bmiHeader.biWidth = newWidth;
+                bmi.bmiHeader.biHeight = -newHeight;  // Top-down
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB;
+
+                void* pBits = nullptr;
+                HBITMAP hScaled = CreateDIBSection(hdcDst, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+
+                if (hScaled)
+                {
+                    HBITMAP hOldSrc = (HBITMAP)SelectObject(hdcSrc, hBitmap);
+                    HBITMAP hOldDst = (HBITMAP)SelectObject(hdcDst, hScaled);
+
+                    SetStretchBltMode(hdcDst, HALFTONE);
+                    StretchBlt(hdcDst, 0, 0, newWidth, newHeight,
+                               hdcSrc, 0, 0, width, height, SRCCOPY);
+
+                    SelectObject(hdcSrc, hOldSrc);
+                    SelectObject(hdcDst, hOldDst);
+
+                    DeleteObject(hBitmap);
+                    hBitmap = hScaled;
+                    width = newWidth;
+                    height = newHeight;
+                }
+
+                DeleteDC(hdcSrc);
+                DeleteDC(hdcDst);
+                ReleaseDC(nullptr, hdcScreen);
+            }
+        }
 
         // Save debug bitmap to temp folder
         if (hBitmap)
