@@ -77,6 +77,33 @@ if(WIN32)
     RUNTIME DESTINATION bin
   )
 
+  # VDS Viewer - Standalone VDS viewer application
+  add_executable(VdsViewer WIN32
+    VdsViewer.cpp
+  )
+
+  target_link_libraries(VdsViewer
+    PRIVATE
+      openvds::openvds
+      shlwapi
+      comdlg32
+      shell32
+  )
+
+  set_target_properties(VdsViewer PROPERTIES
+    FOLDER examples
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "vds-viewer"
+  )
+
+  setWarningFlagsForTarget(VdsViewer)
+  copyDllForTarget(VdsViewer)
+
+  install(TARGETS VdsViewer
+    RUNTIME DESTINATION bin
+  )
+
   # MSI Installer (requires WiX Toolset)
   add_subdirectory(installer)
 
