@@ -53,6 +53,51 @@ static std::pair<bool, float> getTargetNoValue(const VolumeDataLayer& layer, boo
 
 static bool RequestSubsetProcessPage(VolumeDataPageImpl* page, const VolumeDataChunk &chunk, const int32_t (&destMin)[Dimensionality_Max], const int32_t (&destMax)[Dimensionality_Max], VolumeDataChannelDescriptor::Format format, void *destBuffer, Error &error)
 {
+  // Validate page has valid data before processing
+  const DataBlock& dataBlock = page->GetDataBlock();
+
+  // Check DataBlock dimensionality is valid
+  if (dataBlock.Dimensionality < 1 || dataBlock.Dimensionality > DataBlock::Dimensionality_Max)
+  {
+    error.code = -1;
+    error.string = fmt::format("RequestSubsetProcessPage: Invalid DataBlock dimensionality {} for chunk {}",
+      (int)dataBlock.Dimensionality, page->GetChunkIndex());
+    assert(false && "RequestSubsetProcessPage: Page has invalid DataBlock dimensionality");
+    return false;
+  }
+
+  // Validate AllocatedSize values are reasonable (not uninitialized garbage)
+  for (int i = 0; i < dataBlock.Dimensionality; i++)
+  {
+    if (dataBlock.AllocatedSize[i] <= 0)
+    {
+      error.code = -1;
+      error.string = fmt::format("RequestSubsetProcessPage: Invalid AllocatedSize[{}]={} for chunk {}",
+        i, dataBlock.AllocatedSize[i], page->GetChunkIndex());
+      assert(false && "RequestSubsetProcessPage: Page has invalid AllocatedSize (<=0)");
+      return false;
+    }
+    // Check for obviously garbage values (uninitialized memory pattern 0xCDCDCDCD = -842150451)
+    if (dataBlock.AllocatedSize[i] > 100000 || dataBlock.AllocatedSize[i] == -842150451)
+    {
+      error.code = -1;
+      error.string = fmt::format("RequestSubsetProcessPage: Suspicious AllocatedSize[{}]={} (possibly uninitialized) for chunk {}",
+        i, dataBlock.AllocatedSize[i], page->GetChunkIndex());
+      assert(false && "RequestSubsetProcessPage: Page has suspicious AllocatedSize (too large or uninitialized pattern)");
+      return false;
+    }
+  }
+
+  // Validate buffer pointer
+  void* buffer = page->GetRawBufferInternal();
+  if (buffer == nullptr)
+  {
+    error.code = -1;
+    error.string = fmt::format("RequestSubsetProcessPage: Page buffer is null for chunk {}", page->GetChunkIndex());
+    assert(false && "RequestSubsetProcessPage: Page buffer is null");
+    return false;
+  }
+
   int32_t sourceMin[Dimensionality_Max];
   int32_t sourceMax[Dimensionality_Max];
   int32_t sourceMinExcludingMargin[Dimensionality_Max];
@@ -165,6 +210,35 @@ struct Box
 
 int64_t VolumeDataRequestProcessor::RequestVolumeSubset(void *buffer, VolumeDataLayer const *volumeDataLayer, const int32_t(&minRequested)[Dimensionality_Max], const int32_t (&maxRequested)[Dimensionality_Max], int32_t LOD, VolumeDataChannelDescriptor::Format format, bool isReplaceNoValue, float replacementNoValue)
 {
+  // Validate buffer is not null - caller must provide valid destination buffer
+  if (buffer == nullptr)
+  {
+    throw std::runtime_error("RequestVolumeSubset: buffer is null - caller must provide valid destination buffer");
+  }
+
+  // Validate volumeDataLayer
+  if (volumeDataLayer == nullptr)
+  {
+    throw std::runtime_error("RequestVolumeSubset: volumeDataLayer is null");
+  }
+
+  // Validate min/max bounds make sense
+  int dimensionality = volumeDataLayer->GetLayout()->GetDimensionality();
+  for (int dim = 0; dim < dimensionality; dim++)
+  {
+    if (minRequested[dim] >= maxRequested[dim])
+    {
+      throw std::runtime_error(fmt::format("RequestVolumeSubset: Invalid bounds - min[{}]={} >= max[{}]={}",
+        dim, minRequested[dim], dim, maxRequested[dim]));
+    }
+    // Check for suspicious uninitialized values (0xCDCDCDCD = -842150451)
+    if (minRequested[dim] == -842150451 || maxRequested[dim] == -842150451)
+    {
+      throw std::runtime_error(fmt::format("RequestVolumeSubset: Suspicious uninitialized value detected in bounds at dim {} (min={}, max={})",
+        dim, minRequested[dim], maxRequested[dim]));
+    }
+  }
+
   Box boxRequested;
   memcpy(boxRequested.min, minRequested, sizeof(boxRequested.min));
   memcpy(boxRequested.max, maxRequested, sizeof(boxRequested.max));
@@ -1287,6 +1361,24 @@ static bool RequestVolumeSamplesProcessPage(VolumeDataPageImpl *page, VolumeData
 
 int64_t VolumeDataRequestProcessor::RequestVolumeSamples(void *buffer, VolumeDataLayer const *volumeDataLayer, const float(*samplePositions)[Dimensionality_Max], int32_t samplePosCount, InterpolationMethod interpolationMethod, bool isReplaceNoValue, float replacementNoValue)
 {
+  // Validate buffer is not null
+  if (buffer == nullptr)
+  {
+    throw std::runtime_error("RequestVolumeSamples: buffer is null - caller must provide valid destination buffer");
+  }
+  if (volumeDataLayer == nullptr)
+  {
+    throw std::runtime_error("RequestVolumeSamples: volumeDataLayer is null");
+  }
+  if (samplePositions == nullptr && samplePosCount > 0)
+  {
+    throw std::runtime_error("RequestVolumeSamples: samplePositions is null but samplePosCount > 0");
+  }
+  if (samplePosCount < 0)
+  {
+    throw std::runtime_error(fmt::format("RequestVolumeSamples: invalid samplePosCount={}", samplePosCount));
+  }
+
   std::shared_ptr<std::vector<VolumeDataSamplePos>> volumeDataSamplePositions = std::make_shared<std::vector<VolumeDataSamplePos>>();
 
   volumeDataSamplePositions->resize(samplePosCount);
@@ -1530,6 +1622,23 @@ static bool RequestVolumeTracesProcessPage (VolumeDataPageImpl *page, VolumeData
 
 int64_t VolumeDataRequestProcessor::RequestVolumeTraces(void *buffer, VolumeDataLayer const *volumeDataLayer, const float(*tracePositions)[Dimensionality_Max], int32_t tracePositionsCount, int32_t LOD, InterpolationMethod interpolationMethod, int32_t traceDimension, bool isReplaceNoValue, float replacementNoValue)
 {
+  // Validate buffer is not null
+  if (buffer == nullptr)
+  {
+    throw std::runtime_error("RequestVolumeTraces: buffer is null - caller must provide valid destination buffer");
+  }
+  if (volumeDataLayer == nullptr)
+  {
+    throw std::runtime_error("RequestVolumeTraces: volumeDataLayer is null");
+  }
+  if (tracePositions == nullptr && tracePositionsCount > 0)
+  {
+    throw std::runtime_error("RequestVolumeTraces: tracePositions is null but tracePositionsCount > 0");
+  }
+  if (tracePositionsCount < 0)
+  {
+    throw std::runtime_error(fmt::format("RequestVolumeTraces: invalid tracePositionsCount={}", tracePositionsCount));
+  }
   if (traceDimension < 0 || traceDimension >= Dimensionality_Max)
   {
     throw std::runtime_error("The trace dimension must be a valid dimension.");
@@ -1983,19 +2092,68 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
     // Phase 1: Fetch all pages sequentially (I/O only)
     // This keeps all IStream access on the main thread
     std::vector<VolumeDataPageAccessorImpl::FetchedData> fetchedData(pageCount);
+    std::vector<bool> enteredSettingData(pageCount, false);  // Track which pages we entered
+    std::vector<bool> pageAlreadyHasData(pageCount, false);  // Track pages that already have cached data
+
     for (int i = 0; i < pageCount; i++)
     {
       if (job->cancelled)
         break;
 
       JobPage& jobPage = job->pages[i];
-      if (jobPage.page && jobPage.page->EnterSettingData())
+      if (jobPage.page)
       {
-        fetchedData[i] = pageAccessor->FetchPageData(jobPage.page);
-        if (!fetchedData[i].success)
+        // CRITICAL: Check RequestPrepared BEFORE calling EnterSettingData!
+        // If the page already has data (RequestPrepared == false), we don't need to
+        // fetch or decompress - just use the cached data directly in Phase 2.
+        // This matches the normal ReadPreparedPage flow.
+        if (!jobPage.page->RequestPrepared())
         {
-          job->cancelled = true;
-          job->completedError = fetchedData[i].error;
+          pageAlreadyHasData[i] = true;
+          fetchedData[i].success = true;
+          fetchedData[i].serializedData.clear();
+          continue;  // Skip to next page - this one already has data
+        }
+
+        bool entered = jobPage.page->EnterSettingData();
+        enteredSettingData[i] = entered;
+
+        if (entered)
+        {
+          // Double-check RequestPrepared after entering (race check, matches normal flow)
+          if (!jobPage.page->RequestPrepared())
+          {
+            jobPage.page->LeaveSettingData();
+            enteredSettingData[i] = false;
+            pageAlreadyHasData[i] = true;
+            fetchedData[i].success = true;
+            fetchedData[i].serializedData.clear();
+            continue;
+          }
+
+          fetchedData[i] = pageAccessor->FetchPageData(jobPage.page);
+          if (!fetchedData[i].success)
+          {
+            m_logger.LogError(fmt::format("SINGLE_THREADED Phase1: FetchPageData failed for page {} chunk {}: {}",
+              i, jobPage.page->GetChunkIndex(), fetchedData[i].error.string));
+            job->cancelled = true;
+            job->completedError = fetchedData[i].error;
+          }
+        }
+        else
+        {
+          // EnterSettingData returned false - another thread/request is setting data on this page.
+          // CRITICAL: EnterSettingData() always increments m_settingData, so we MUST call
+          // LeaveSettingData() to balance the counter, even when it returns false!
+          jobPage.page->LeaveSettingData();
+
+          m_logger.LogWarning(fmt::format("SINGLE_THREADED Phase1: EnterSettingData returned false for page {} chunk {}! "
+            "Another request is setting this page. Will wait for it in Phase 2.",
+            i, jobPage.page->GetChunkIndex()));
+
+          // Mark that we didn't fetch data - Phase 2 will need to wait for existing data
+          fetchedData[i].success = true;  // Not an error - another setter has/will have the data
+          fetchedData[i].serializedData.clear();  // Signal to use existing page data
         }
       }
     }
@@ -2008,7 +2166,7 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
     for (int i = 0; i < pageCount; i++)
     {
       decompressFutures.push_back(m_decompressionThreadPool->Enqueue(
-        [job, i, pageAccessor, processor, &fetchedData]() -> Error
+        [job, i, pageAccessor, processor, &fetchedData, &enteredSettingData, &pageAlreadyHasData, this]() -> Error
         {
           MarkJobAsDoneOnExit jobDone(job, i);
           JobPage& jobPage = job->pages[i];
@@ -2026,12 +2184,94 @@ int64_t VolumeDataRequestProcessor::AddJob(const std::vector<VolumeDataChunk>& c
             return Error();
           }
 
+          // If page already had cached data in Phase 1, just process it directly
+          // No decompression needed - data is already in the page
+          if (pageAlreadyHasData[i])
+          {
+            Error error;
+            if (!processor(jobPage.page, jobPage.chunk, error))
+            {
+              m_logger.LogError(fmt::format("SINGLE_THREADED Phase2: processor failed for cached page {} chunk {}: {}",
+                i, jobPage.page->GetChunkIndex(), error.string));
+              job->cancelled = true;
+              return error;
+            }
+            return Error();  // Success
+          }
+
+          // If we didn't enter setting data in Phase 1, another request was/is setting this page.
+          // We need to wait for that request to finish and then use the cached data.
+          if (!enteredSettingData[i])
+          {
+            m_logger.LogInfo(fmt::format("SINGLE_THREADED Phase2: Page {} chunk {} - waiting for existing setter to complete",
+              i, jobPage.page->GetChunkIndex()));
+
+            // Wait for the other setter to finish (SettingData() returns true while counter > 0)
+            int waitIterations = 0;
+            while (jobPage.page->SettingData() && waitIterations < 1000)
+            {
+              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              waitIterations++;
+            }
+
+            if (jobPage.page->SettingData())
+            {
+              m_logger.LogError(fmt::format("SINGLE_THREADED Phase2: Timeout waiting for page {} chunk {} setter to complete",
+                i, jobPage.page->GetChunkIndex()));
+              Error error;
+              error.code = -1;
+              error.string = "Timeout waiting for page setter to complete";
+              job->cancelled = true;
+              return error;
+            }
+
+            // Page should now have data from the other setter - verify it
+            const DataBlock& db = jobPage.page->GetDataBlock();
+            if (db.Dimensionality < 1 || db.Dimensionality > DataBlock::Dimensionality_Max)
+            {
+              m_logger.LogError(fmt::format("SINGLE_THREADED Phase2: Page {} chunk {} - finished waiting but DataBlock invalid",
+                i, jobPage.page->GetChunkIndex()));
+              Error error;
+              error.code = -1;
+              error.string = "Page finished waiting but has invalid DataBlock";
+              job->cancelled = true;
+              return error;
+            }
+
+            // Process the page using existing data
+            Error error;
+            if (!processor(jobPage.page, jobPage.chunk, error))
+            {
+              m_logger.LogError(fmt::format("SINGLE_THREADED Phase2: processor failed for cached page {} chunk {}: {}",
+                i, jobPage.page->GetChunkIndex(), error.string));
+              job->cancelled = true;
+              return error;
+            }
+            return Error();  // Success - page processed using cached data
+          }
+
           Error error;
 
           // Decompress the fetched data
           if (!pageAccessor->DecompressPageData(jobPage.page, fetchedData[i]))
           {
             pageAccessor->GetError(jobPage.page, error);
+            m_logger.LogError(fmt::format("SINGLE_THREADED Phase2: DecompressPageData failed for page {} chunk {}: {}",
+              i, jobPage.page->GetChunkIndex(), error.string));
+            job->cancelled = true;
+            return error;
+          }
+
+          // Validate page has valid data before processing
+          const DataBlock& db = jobPage.page->GetDataBlock();
+          if (db.Dimensionality < 1 || db.Dimensionality > DataBlock::Dimensionality_Max ||
+              db.AllocatedSize[0] <= 0 || db.AllocatedSize[0] > 100000)
+          {
+            m_logger.LogError(fmt::format("SINGLE_THREADED Phase2: Page {} chunk {} has invalid DataBlock after decompression! "
+              "Dimensionality={}, AllocatedSize[0]={}",
+              i, jobPage.page->GetChunkIndex(), (int)db.Dimensionality, db.AllocatedSize[0]));
+            error.code = -1;
+            error.string = "Page has invalid DataBlock after decompression";
             job->cancelled = true;
             return error;
           }

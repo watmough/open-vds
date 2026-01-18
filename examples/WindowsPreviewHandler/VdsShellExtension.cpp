@@ -625,10 +625,11 @@ public:
                 int newSlice = m_sliceIndex - delta * scrollAmount;
                 newSlice = std::max(0, std::min(maxSlice, newSlice));
 
-                // Cancel any pending refinement timer when slice changes
+                // Cancel any pending refinement timer and in-progress render when slice changes
                 if (newSlice != m_sliceIndex)
                 {
                     KillTimer(hwnd, 1);
+                    m_renderer->RequestCancel();  // Signal render to stop if in progress
                 }
                 m_sliceIndex = newSlice;
             }

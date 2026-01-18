@@ -38,8 +38,125 @@
 #include <vector>
 
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "ole32.lib")
 
 namespace fs = std::filesystem;
+
+// ============================================================================
+// IStream wrapper for file - mimics how preview handler accesses VDS
+// ============================================================================
+
+class FileStream : public IStream
+{
+public:
+    FileStream(const std::wstring& filepath) : m_refCount(1), m_position(0)
+    {
+        m_hFile = CreateFileW(filepath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (m_hFile != INVALID_HANDLE_VALUE)
+        {
+            LARGE_INTEGER size;
+            GetFileSizeEx(m_hFile, &size);
+            m_size = size.QuadPart;
+        }
+        else
+        {
+            m_size = 0;
+        }
+    }
+
+    ~FileStream()
+    {
+        if (m_hFile != INVALID_HANDLE_VALUE)
+            CloseHandle(m_hFile);
+    }
+
+    bool IsValid() const { return m_hFile != INVALID_HANDLE_VALUE; }
+
+    // IUnknown
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (riid == IID_IUnknown || riid == IID_IStream || riid == IID_ISequentialStream)
+        {
+            *ppv = static_cast<IStream*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    STDMETHODIMP_(ULONG) AddRef() override { return InterlockedIncrement(&m_refCount); }
+    STDMETHODIMP_(ULONG) Release() override
+    {
+        ULONG ref = InterlockedDecrement(&m_refCount);
+        if (ref == 0) delete this;
+        return ref;
+    }
+
+    // ISequentialStream
+    STDMETHODIMP Read(void* pv, ULONG cb, ULONG* pcbRead) override
+    {
+        if (!pv) return E_INVALIDARG;
+        if (m_hFile == INVALID_HANDLE_VALUE) return E_FAIL;
+
+        LARGE_INTEGER pos;
+        pos.QuadPart = m_position;
+        if (!SetFilePointerEx(m_hFile, pos, nullptr, FILE_BEGIN))
+            return HRESULT_FROM_WIN32(GetLastError());
+
+        DWORD bytesRead = 0;
+        if (!ReadFile(m_hFile, pv, cb, &bytesRead, nullptr))
+            return HRESULT_FROM_WIN32(GetLastError());
+
+        m_position += bytesRead;
+        if (pcbRead) *pcbRead = bytesRead;
+        return (bytesRead == cb) ? S_OK : S_FALSE;
+    }
+
+    STDMETHODIMP Write(const void*, ULONG, ULONG*) override { return E_NOTIMPL; }
+
+    // IStream
+    STDMETHODIMP Seek(LARGE_INTEGER dlibMove, DWORD dwOrigin, ULARGE_INTEGER* plibNewPosition) override
+    {
+        LONGLONG newPos = m_position;
+        switch (dwOrigin)
+        {
+        case STREAM_SEEK_SET: newPos = dlibMove.QuadPart; break;
+        case STREAM_SEEK_CUR: newPos += dlibMove.QuadPart; break;
+        case STREAM_SEEK_END: newPos = m_size + dlibMove.QuadPart; break;
+        default: return E_INVALIDARG;
+        }
+        if (newPos < 0) return E_INVALIDARG;
+        m_position = newPos;
+        if (plibNewPosition) plibNewPosition->QuadPart = m_position;
+        return S_OK;
+    }
+
+    STDMETHODIMP SetSize(ULARGE_INTEGER) override { return E_NOTIMPL; }
+    STDMETHODIMP CopyTo(IStream*, ULARGE_INTEGER, ULARGE_INTEGER*, ULARGE_INTEGER*) override { return E_NOTIMPL; }
+    STDMETHODIMP Commit(DWORD) override { return S_OK; }
+    STDMETHODIMP Revert() override { return E_NOTIMPL; }
+    STDMETHODIMP LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override { return E_NOTIMPL; }
+    STDMETHODIMP UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override { return E_NOTIMPL; }
+
+    STDMETHODIMP Stat(STATSTG* pstatstg, DWORD grfStatFlag) override
+    {
+        if (!pstatstg) return E_INVALIDARG;
+        ZeroMemory(pstatstg, sizeof(STATSTG));
+        pstatstg->type = STGTY_STREAM;
+        pstatstg->cbSize.QuadPart = m_size;
+        return S_OK;
+    }
+
+    STDMETHODIMP Clone(IStream**) override { return E_NOTIMPL; }
+
+private:
+    LONG m_refCount;
+    HANDLE m_hFile;
+    LONGLONG m_size;
+    LONGLONG m_position;
+};
 
 // ============================================================================
 // Timing utilities
@@ -500,8 +617,29 @@ RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
 
         // Calculate LOD-sized buffer dimensions
         // OpenVDS returns smaller buffers at higher LODs: LOD N returns 1/(2^N) resolution per axis
-        int lodDim0Size = GetLODSize(voxelMin[dim0], voxelMax[dim0], params.lod);
-        int lodDim1Size = GetLODSize(voxelMin[dim1], voxelMax[dim1], params.lod);
+        // BUT the "full resolution dimension" is NOT decimated at higher LODs
+        auto layoutDescriptor = layout->GetLayoutDescriptor();
+        int fullResDim = layoutDescriptor.GetFullResolutionDimension();
+
+        int lodDim0Size, lodDim1Size;
+        if (fullResDim == dim0)
+        {
+            // dim0 keeps full resolution
+            lodDim0Size = voxelMax[dim0] - voxelMin[dim0];
+            lodDim1Size = GetLODSize(voxelMin[dim1], voxelMax[dim1], params.lod);
+        }
+        else if (fullResDim == dim1)
+        {
+            // dim1 keeps full resolution
+            lodDim0Size = GetLODSize(voxelMin[dim0], voxelMax[dim0], params.lod);
+            lodDim1Size = voxelMax[dim1] - voxelMin[dim1];
+        }
+        else
+        {
+            // Neither dim0 nor dim1 is full resolution, both are decimated
+            lodDim0Size = GetLODSize(voxelMin[dim0], voxelMax[dim0], params.lod);
+            lodDim1Size = GetLODSize(voxelMin[dim1], voxelMax[dim1], params.lod);
+        }
 
         int width = needsTranspose ? lodDim1Size : lodDim0Size;
         int height = needsTranspose ? lodDim0Size : lodDim1Size;
@@ -510,7 +648,10 @@ RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
         output.height = height;
         output.totalVoxels = (int64_t)lodDim0Size * lodDim1Size;
 
-        std::vector<float> buffer(lodDim0Size * lodDim1Size);
+        // Use OpenVDS to calculate exact buffer size (safest approach)
+        int64_t expectedBufferSize = accessManager.GetVolumeSubsetBufferSize<float>(voxelMin, voxelMax, params.lod, 0);
+        size_t bufferFloatCount = static_cast<size_t>(expectedBufferSize / sizeof(float));
+        std::vector<float> buffer(bufferFloatCount);
 
         // Find available dimension group
         OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_012;
@@ -548,6 +689,21 @@ RenderOutput RenderSliceWithTiming(OpenVDS::VDSHandle vdsHandle,
             output.renderTimeMs = ElapsedMs(startRender, Clock::now());
             return output;
         }
+
+        // Diagnostic: dump all request parameters
+        printf("=== RequestVolumeSubset Parameters ===\n");
+        printf("  voxelMin: [%d, %d, %d, %d, %d, %d]\n",
+               voxelMin[0], voxelMin[1], voxelMin[2], voxelMin[3], voxelMin[4], voxelMin[5]);
+        printf("  voxelMax: [%d, %d, %d, %d, %d, %d]\n",
+               voxelMax[0], voxelMax[1], voxelMax[2], voxelMax[3], voxelMax[4], voxelMax[5]);
+        printf("  LOD: %d, Channel: 0\n", params.lod);
+        printf("  DimGroup: %s\n", dimGroupName);
+        printf("  fullResDim: %d\n", fullResDim);
+        printf("  lodDim0Size: %d, lodDim1Size: %d\n", lodDim0Size, lodDim1Size);
+        printf("  buffer size: %zu floats (%zu bytes)\n", buffer.size(), buffer.size() * sizeof(float));
+        printf("  expectedBufferSize from API: %lld bytes\n", (long long)expectedBufferSize);
+        printf("======================================\n");
+        fflush(stdout);
 
         // Request data
         auto request = accessManager.RequestVolumeSubset<float>(
@@ -1107,6 +1263,223 @@ void RunLODComparisonTest(const std::string& filepath, int targetMaxSize)
     OpenVDS::Close(vdsHandle, error);
 }
 
+// Test all slices in a VDS file to find which ones crash
+// Test all slices using IStream (like preview handler does)
+void TestAllSlicesWithStream(const std::wstring& filepath, int dimension = -1, int lod = 0)
+{
+    printf("\n================================================================================\n");
+    printf("TESTING ALL SLICES (via IStream)\n");
+    printf("================================================================================\n");
+    wprintf(L"File: %s\n", filepath.c_str());
+
+    // Create IStream wrapper around file
+    FileStream* pStream = new FileStream(filepath);
+    if (!pStream->IsValid())
+    {
+        printf("ERROR: Failed to open file for IStream\n");
+        pStream->Release();
+        return;
+    }
+
+    STATSTG stat;
+    pStream->Stat(&stat, STATFLAG_NONAME);
+    printf("Stream size: %lld bytes\n", stat.cbSize.QuadPart);
+
+    // Open VDS via IStream (same as preview handler)
+    OpenVDS::IStreamOpenOptions options(pStream);
+    OpenVDS::Error error;
+    OpenVDS::VDSHandle vdsHandle = OpenVDS::Open(options, error);
+
+    if (error.code != 0 || !vdsHandle)
+    {
+        printf("ERROR: Failed to open VDS via IStream: %s\n", error.string.c_str());
+        pStream->Release();
+        return;
+    }
+
+    OpenVDS::VolumeDataLayout* layout = OpenVDS::GetLayout(vdsHandle);
+    if (!layout)
+    {
+        printf("ERROR: Failed to get layout\n");
+        OpenVDS::Close(vdsHandle, error);
+        pStream->Release();
+        return;
+    }
+
+    int dimensionality = layout->GetDimensionality();
+    printf("Dimensionality: %d\n", dimensionality);
+
+    // Determine slice dimension
+    if (dimension < 0)
+    {
+        dimension = (dimensionality >= 3) ? 2 : 0;
+    }
+    if (dimension >= dimensionality)
+    {
+        printf("ERROR: Dimension %d out of range (max: %d)\n", dimension, dimensionality - 1);
+        OpenVDS::Close(vdsHandle, error);
+        pStream->Release();
+        return;
+    }
+
+    int sliceCount = layout->GetDimensionNumSamples(dimension);
+    auto axis = layout->GetAxisDescriptor(dimension);
+    printf("Testing dimension %d (%s): %d slices at LOD %d\n\n", dimension, axis.GetName(), sliceCount, lod);
+
+    int successCount = 0;
+    int failCount = 0;
+    std::vector<int> failedSlices;
+
+    for (int slice = 0; slice < sliceCount; slice++)
+    {
+        printf("\rSlice %d/%d...", slice + 1, sliceCount);
+        fflush(stdout);
+
+        RenderParams params;
+        params.dimension = dimension;
+        params.sliceIndex = slice;
+        params.lod = lod;
+        params.quiet = true;
+
+        RenderOutput output = RenderSliceWithTiming(vdsHandle, layout, params);
+
+        if (output.success)
+        {
+            successCount++;
+            if (output.bitmap)
+                DeleteObject(output.bitmap);
+        }
+        else
+        {
+            failCount++;
+            failedSlices.push_back(slice);
+            printf("\n  FAILED at slice %d: %s\n", slice, output.errorMessage.c_str());
+        }
+    }
+
+    printf("\r                              \n");  // Clear progress line
+    printf("\n================================================================================\n");
+    printf("RESULTS (IStream mode)\n");
+    printf("================================================================================\n");
+    printf("Total slices: %d\n", sliceCount);
+    printf("Success: %d (%.1f%%)\n", successCount, 100.0 * successCount / sliceCount);
+    printf("Failed:  %d (%.1f%%)\n", failCount, 100.0 * failCount / sliceCount);
+
+    if (!failedSlices.empty())
+    {
+        printf("\nFailed slices: ");
+        for (size_t i = 0; i < failedSlices.size() && i < 20; i++)
+        {
+            if (i > 0) printf(", ");
+            printf("%d", failedSlices[i]);
+        }
+        if (failedSlices.size() > 20)
+            printf(", ... (%zu more)", failedSlices.size() - 20);
+        printf("\n");
+    }
+
+    OpenVDS::Close(vdsHandle, error);
+    pStream->Release();
+}
+
+void TestAllSlices(const std::string& filepath, int dimension = -1, int lod = 0)
+{
+    printf("\n================================================================================\n");
+    printf("TESTING ALL SLICES\n");
+    printf("================================================================================\n");
+    printf("File: %s\n", filepath.c_str());
+
+    OpenVDS::Error error;
+    OpenVDS::VDSHandle vdsHandle = OpenVDS::Open(filepath, error);
+
+    if (error.code != 0 || !vdsHandle)
+    {
+        printf("ERROR: Failed to open VDS: %s\n", error.string.c_str());
+        return;
+    }
+
+    OpenVDS::VolumeDataLayout* layout = OpenVDS::GetLayout(vdsHandle);
+    if (!layout)
+    {
+        printf("ERROR: Failed to get layout\n");
+        OpenVDS::Close(vdsHandle, error);
+        return;
+    }
+
+    int dimensionality = layout->GetDimensionality();
+    printf("Dimensionality: %d\n", dimensionality);
+
+    // Determine slice dimension
+    if (dimension < 0)
+    {
+        dimension = (dimensionality >= 3) ? 2 : 0;
+    }
+    if (dimension >= dimensionality)
+    {
+        printf("ERROR: Dimension %d out of range (max: %d)\n", dimension, dimensionality - 1);
+        OpenVDS::Close(vdsHandle, error);
+        return;
+    }
+
+    int sliceCount = layout->GetDimensionNumSamples(dimension);
+    auto axis = layout->GetAxisDescriptor(dimension);
+    printf("Testing dimension %d (%s): %d slices at LOD %d\n\n", dimension, axis.GetName(), sliceCount, lod);
+
+    int successCount = 0;
+    int failCount = 0;
+    std::vector<int> failedSlices;
+
+    for (int slice = 0; slice < sliceCount; slice++)
+    {
+        printf("\rSlice %d/%d...", slice + 1, sliceCount);
+        fflush(stdout);
+
+        RenderParams params;
+        params.dimension = dimension;
+        params.sliceIndex = slice;
+        params.lod = lod;
+        params.quiet = true;
+
+        RenderOutput output = RenderSliceWithTiming(vdsHandle, layout, params);
+
+        if (output.success)
+        {
+            successCount++;
+            if (output.bitmap)
+                DeleteObject(output.bitmap);
+        }
+        else
+        {
+            failCount++;
+            failedSlices.push_back(slice);
+            printf("\n  FAILED at slice %d: %s\n", slice, output.errorMessage.c_str());
+        }
+    }
+
+    printf("\r                              \n");  // Clear progress line
+    printf("\n================================================================================\n");
+    printf("RESULTS\n");
+    printf("================================================================================\n");
+    printf("Total slices: %d\n", sliceCount);
+    printf("Success: %d (%.1f%%)\n", successCount, 100.0 * successCount / sliceCount);
+    printf("Failed:  %d (%.1f%%)\n", failCount, 100.0 * failCount / sliceCount);
+
+    if (!failedSlices.empty())
+    {
+        printf("\nFailed slices: ");
+        for (size_t i = 0; i < failedSlices.size() && i < 20; i++)
+        {
+            if (i > 0) printf(", ");
+            printf("%d", failedSlices[i]);
+        }
+        if (failedSlices.size() > 20)
+            printf(", ... (%zu more)", failedSlices.size() - 20);
+        printf("\n");
+    }
+
+    OpenVDS::Close(vdsHandle, error);
+}
+
 void PrintUsage()
 {
     printf("VDS Render Test Harness\n\n");
@@ -1114,6 +1487,7 @@ void PrintUsage()
     printf("  VdsRenderTest.exe <input.vds> [output.bmp] [dimension] [sliceIndex]\n");
     printf("  VdsRenderTest.exe --benchmark <folder> [--output report.csv] [--verbose]\n");
     printf("  VdsRenderTest.exe --lod-compare <input.vds> [maxSize]\n");
+    printf("  VdsRenderTest.exe --all-slices <input.vds> [dimension] [lod]\n");
     printf("\n");
     printf("Single file mode:\n");
     printf("  input.vds   - Path to VDS file\n");
@@ -1131,6 +1505,16 @@ void PrintUsage()
     printf("  maxSize               - Target display size in pixels (default: 400)\n");
     printf("                          Outputs: lod_compare_0.bmp, lod_compare_1.bmp, etc.\n");
     printf("\n");
+    printf("All slices mode:\n");
+    printf("  --all-slices <vds>    - Test rendering every slice to find crashes\n");
+    printf("  dimension             - Dimension to slice (default: 2 for 3D)\n");
+    printf("  lod                   - LOD level to use (default: 0)\n");
+    printf("\n");
+    printf("IStream mode (mimics preview handler):\n");
+    printf("  --stream <vds>        - Test all slices using IStream (like preview handler)\n");
+    printf("  dimension             - Dimension to slice (default: 2 for 3D)\n");
+    printf("  lod                   - LOD level to use (default: 0)\n");
+    printf("\n");
     printf("Benchmark tests each VDS with:\n");
     printf("  - Different slice dimensions (for 3D+ data)\n");
     printf("  - Different LOD levels where available\n");
@@ -1145,62 +1529,120 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    // Check for LOD comparison mode
-    std::wstring arg1 = argv[1];
-    if (arg1 == L"--lod-compare" || arg1 == L"--lod")
+    // Parse all arguments flexibly - flags can be in any order
+    std::wstring filepath;
+    std::wstring outputPath = L"output.bmp";
+    bool useStream = false;
+    bool allSlices = false;
+    bool lodCompare = false;
+    bool benchmark = false;
+    int dimension = -1;  // Auto-detect
+    int lod = 0;
+    int sliceIndex = -1;
+    int maxSize = 400;
+    bool verbose = false;
+
+    for (int i = 1; i < argc; i++)
     {
-        if (argc < 3)
-        {
-            printf("ERROR: --lod-compare requires a VDS file path\n");
-            PrintUsage();
-            return 1;
-        }
+        std::wstring arg = argv[i];
 
+        if (arg == L"--stream" || arg == L"--istream")
+        {
+            useStream = true;
+        }
+        else if (arg == L"--all-slices" || arg == L"--test-slices")
+        {
+            allSlices = true;
+        }
+        else if (arg == L"--lod-compare" || arg == L"--lod-test")
+        {
+            lodCompare = true;
+        }
+        else if (arg == L"--benchmark" || arg == L"-b")
+        {
+            benchmark = true;
+        }
+        else if (arg == L"--verbose" || arg == L"-v")
+        {
+            verbose = true;
+        }
+        else if ((arg == L"--lod" || arg == L"-l") && i + 1 < argc)
+        {
+            lod = _wtoi(argv[++i]);
+        }
+        else if ((arg == L"--dim" || arg == L"-d") && i + 1 < argc)
+        {
+            dimension = _wtoi(argv[++i]);
+        }
+        else if ((arg == L"--slice" || arg == L"-s") && i + 1 < argc)
+        {
+            sliceIndex = _wtoi(argv[++i]);
+        }
+        else if ((arg == L"--output" || arg == L"-o") && i + 1 < argc)
+        {
+            outputPath = argv[++i];
+        }
+        else if ((arg == L"--size") && i + 1 < argc)
+        {
+            maxSize = _wtoi(argv[++i]);
+        }
+        else if (arg[0] != L'-' && filepath.empty())
+        {
+            // First non-flag argument is the filepath
+            filepath = arg;
+        }
+    }
+
+    if (filepath.empty())
+    {
+        printf("ERROR: No VDS file path specified\n");
+        PrintUsage();
+        return 1;
+    }
+
+    // Handle --stream --all-slices combination
+    if (useStream && allSlices)
+    {
+        TestAllSlicesWithStream(filepath, dimension, lod);
+        return 0;
+    }
+
+    // Handle --stream alone (single slice via IStream)
+    if (useStream)
+    {
+        TestAllSlicesWithStream(filepath, dimension, lod);
+        return 0;
+    }
+
+    // Handle --all-slices (without stream)
+    if (allSlices)
+    {
         char vdsPath[MAX_PATH];
-        WideCharToMultiByte(CP_UTF8, 0, argv[2], -1, vdsPath, MAX_PATH, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, filepath.c_str(), -1, vdsPath, MAX_PATH, nullptr, nullptr);
+        TestAllSlices(vdsPath, dimension, lod);
+        return 0;
+    }
 
-        int maxSize = 400;  // Default target size
-        if (argc > 3)
-        {
-            maxSize = _wtoi(argv[3]);
-            if (maxSize <= 0) maxSize = 400;
-        }
-
+    // Check for LOD comparison mode
+    if (lodCompare)
+    {
+        char vdsPath[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, filepath.c_str(), -1, vdsPath, MAX_PATH, nullptr, nullptr);
         RunLODComparisonTest(vdsPath, maxSize);
         return 0;
     }
 
     // Check for benchmark mode
-    if (arg1 == L"--benchmark" || arg1 == L"-b")
+    if (benchmark)
     {
-        if (argc < 3)
-        {
-            printf("ERROR: --benchmark requires a folder path\n");
-            PrintUsage();
-            return 1;
-        }
-
         char folderPath[MAX_PATH];
-        WideCharToMultiByte(CP_UTF8, 0, argv[2], -1, folderPath, MAX_PATH, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, filepath.c_str(), -1, folderPath, MAX_PATH, nullptr, nullptr);
 
         std::string outputFile = "benchmark_results.csv";
-        bool verbose = false;
-
-        // Parse additional arguments
-        for (int i = 3; i < argc; i++)
-        {
-            std::wstring arg = argv[i];
-            if ((arg == L"--output" || arg == L"-o") && i + 1 < argc)
-            {
-                char outPath[MAX_PATH];
-                WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, outPath, MAX_PATH, nullptr, nullptr);
-                outputFile = outPath;
-            }
-            else if (arg == L"--verbose" || arg == L"-v")
-            {
-                verbose = true;
-            }
-        }
+        char outPath[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, outputPath.c_str(), -1, outPath, MAX_PATH, nullptr, nullptr);
+        if (outputPath != L"output.bmp")
+            outputFile = outPath;
 
         printf("Scanning for VDS files in: %s\n", folderPath);
         std::vector<std::string> vdsFiles = FindVdsFiles(folderPath);
@@ -1231,16 +1673,11 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     // Single file mode
-    const wchar_t* inputPath = argv[1];
-    const wchar_t* outputPath = (argc > 2) ? argv[2] : L"output.bmp";
-    int dimension = (argc > 3) ? _wtoi(argv[3]) : -1;
-    int sliceIndex = (argc > 4) ? _wtoi(argv[4]) : -1;
-
-    printf("Input: %ls\n", inputPath);
-    printf("Output: %ls\n", outputPath);
+    printf("Input: %ls\n", filepath.c_str());
+    printf("Output: %ls\n", outputPath.c_str());
 
     char narrowPath[MAX_PATH];
-    WideCharToMultiByte(CP_UTF8, 0, inputPath, -1, narrowPath, MAX_PATH, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, filepath.c_str(), -1, narrowPath, MAX_PATH, nullptr, nullptr);
 
     OpenVDS::Error error;
     OpenVDS::VDSHandle vdsHandle = OpenVDS::Open(narrowPath, error);
@@ -1282,9 +1719,9 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    if (SaveBitmapToFile(hBitmap, outputPath))
+    if (SaveBitmapToFile(hBitmap, outputPath.c_str()))
     {
-        printf("\nSuccess! Saved to: %ls\n", outputPath);
+        printf("\nSuccess! Saved to: %ls\n", outputPath.c_str());
     }
     else
     {

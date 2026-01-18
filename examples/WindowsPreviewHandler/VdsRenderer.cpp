@@ -141,7 +141,10 @@ static void LogToFile(const std::vector<std::wstring>& lines, const std::string&
 // LOD optimization: Use higher LODs (lower resolution) for faster rendering
 // when the display size doesn't require full resolution data.
 // Higher LODs return smaller buffers - LOD N returns data at 1/(2^N) resolution per axis.
+// TEMPORARILY DISABLED: Progressive LOD refinement causes crashes with IStream
+// after multiple reads corrupt stream state. Use target LOD directly.
 static constexpr bool ENABLE_LOD_OPTIMIZATION = true;
+static constexpr bool ENABLE_PROGRESSIVE_LOD = false;  // Disable progressive refinement
 
 // Calculate the number of voxels at a given LOD for a range [voxelMin, voxelMax)
 // At LOD 0, returns voxelMax - voxelMin. At LOD 1, returns half that, etc.
@@ -823,6 +826,9 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
     // Prevent concurrent render requests - only one render at a time
     std::lock_guard<std::mutex> lock(m_renderMutex);
 
+    // Clear any previous cancel request now that we're starting a new render
+    ClearCancelFlag();
+
     std::vector<std::wstring> dbg;  // Debug info for error bitmap
     m_lastRenderDebugMessages.clear();
 
@@ -831,6 +837,14 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
     swprintf_s(entryBuf, L"RenderSlice(dim=%d, slice=%d, maxSize=%d)", sliceOnDimension, sliceIndex, maxSize);
     dbg.push_back(entryBuf);
     LogToFile(dbg, m_logFilePath);
+
+    // Check for cancellation before doing work
+    if (IsCancelRequested())
+    {
+        dbg.push_back(L"Cancelled before start");
+        m_lastRenderDebugMessages = std::move(dbg);
+        return nullptr;
+    }
 
     if (!m_vdsHandle || !m_layout)
     {
@@ -951,47 +965,81 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         int maxLOD = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels()) - 1;
         if (maxLOD < 0) maxLOD = 0;
 
-        // Progressive LOD loading: start fast, refine if quick
-        // Check if slice or dimension changed - reset to fastest LOD
-        bool sliceChanged = (sliceIndex != m_lastSliceIndex || sliceOnDimension != m_lastDimension);
-        if (sliceChanged)
+        int selectedLOD = targetLOD;
+
+        if (ENABLE_PROGRESSIVE_LOD)
         {
-            m_currentLOD = maxLOD;  // Start with fastest (lowest quality)
-            m_isRefining = true;
+            // Progressive LOD loading: start fast, refine if quick
+            // Check if slice or dimension changed - reset to fastest LOD
+            bool sliceChanged = (sliceIndex != m_lastSliceIndex || sliceOnDimension != m_lastDimension);
+            if (sliceChanged)
+            {
+                m_currentLOD = maxLOD;  // Start with fastest (lowest quality)
+                m_isRefining = true;
+                m_lastSliceIndex = sliceIndex;
+                m_lastDimension = sliceOnDimension;
+            }
+
+            // If we haven't set a LOD yet, start with fastest
+            if (m_currentLOD < 0)
+            {
+                m_currentLOD = maxLOD;
+                m_isRefining = true;
+            }
+
+            // If still refining and last render was fast, try better quality
+            if (m_isRefining && !sliceChanged && m_lastRenderTimeMs < FAST_RENDER_THRESHOLD_MS && m_currentLOD > targetLOD)
+            {
+                m_currentLOD--;  // Try better quality
+            }
+
+            // Don't go below target LOD - stop refining when we reach it
+            if (m_currentLOD <= targetLOD)
+            {
+                m_currentLOD = targetLOD;
+                m_isRefining = false;  // Reached target, stop refining
+            }
+
+            selectedLOD = m_currentLOD;
+        }
+        else
+        {
+            // Progressive LOD disabled - go straight to target
+            m_currentLOD = targetLOD;
+            m_isRefining = false;
             m_lastSliceIndex = sliceIndex;
             m_lastDimension = sliceOnDimension;
         }
 
-        // If we haven't set a LOD yet, start with fastest
-        if (m_currentLOD < 0)
-        {
-            m_currentLOD = maxLOD;
-            m_isRefining = true;
-        }
-
-        // If still refining and last render was fast, try better quality
-        if (m_isRefining && !sliceChanged && m_lastRenderTimeMs < FAST_RENDER_THRESHOLD_MS && m_currentLOD > targetLOD)
-        {
-            m_currentLOD--;  // Try better quality
-        }
-
-        // Don't go below target LOD
-        if (m_currentLOD < targetLOD)
-        {
-            m_currentLOD = targetLOD;
-            m_isRefining = false;
-        }
-
-        int selectedLOD = m_currentLOD;
-
         // Start timing
         auto renderStartTime = std::chrono::high_resolution_clock::now();
 
-        // Calculate LOD-sized buffer dimensions
-        // OpenVDS returns smaller buffers at higher LODs: LOD N returns 1/(2^N) resolution per axis
-        // voxelMin/voxelMax stay in LOD0 coordinates, but the returned data is at LOD resolution
-        int lodDim0Size = GetLODSize(voxelMin[0], voxelMax[0], selectedLOD);
-        int lodDim1Size = GetLODSize(voxelMin[1], voxelMax[1], selectedLOD);
+        // Get full resolution dimension - this dimension is NOT decimated at higher LODs
+        // Typically dimension 0 (Sample) keeps full resolution in seismic data
+        auto layoutDescriptor = m_layout->GetLayoutDescriptor();
+        int fullResDim = layoutDescriptor.GetFullResolutionDimension();
+
+        // Calculate LOD-sized buffer dimensions correctly
+        // Only decimate dimensions that are NOT the full resolution dimension
+        int lodDim0Size, lodDim1Size;
+        if (fullResDim == 0)
+        {
+            // Dim0 keeps full resolution, only dim1 is decimated
+            lodDim0Size = voxelMax[0] - voxelMin[0];
+            lodDim1Size = GetLODSize(voxelMin[1], voxelMax[1], selectedLOD);
+        }
+        else if (fullResDim == 1)
+        {
+            // Dim1 keeps full resolution, only dim0 is decimated
+            lodDim0Size = GetLODSize(voxelMin[0], voxelMax[0], selectedLOD);
+            lodDim1Size = voxelMax[1] - voxelMin[1];
+        }
+        else
+        {
+            // Neither dim0 nor dim1 is full resolution, both are decimated
+            lodDim0Size = GetLODSize(voxelMin[0], voxelMax[0], selectedLOD);
+            lodDim1Size = GetLODSize(voxelMin[1], voxelMax[1], selectedLOD);
+        }
 
         // OpenVDS returns data with dim0 as fastest-varying
         // buffer layout: buffer[dim1_idx * lodDim0Size + dim0_idx]
@@ -1002,12 +1050,26 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         int height = lodDim0Size;
 
         // Log LOD selection for debugging
-        swprintf_s(buf, L"LOD: %d (buffer: %dx%d, full res: %dx%d, target: %d px)",
-                   selectedLOD, lodDim0Size, lodDim1Size, dim0Size, dim1Size, maxSize);
+        swprintf_s(buf, L"LOD: %d (buffer: %dx%d, fullResDim: %d, full res: %dx%d, target: %d px)",
+                   selectedLOD, lodDim0Size, lodDim1Size, fullResDim, dim0Size, dim1Size, maxSize);
         dbg.push_back(buf);
 
-        // Allocate buffer for LOD-sized slice data
-        std::vector<float> buffer(lodDim0Size * lodDim1Size);
+        // Use OpenVDS to calculate exact buffer size (safest - accounts for all edge cases)
+        int64_t expectedBufferSize = accessManager.GetVolumeSubsetBufferSize<float>(voxelMin, voxelMax, selectedLOD, 0);
+        int64_t ourBufferSize = static_cast<int64_t>(lodDim0Size) * lodDim1Size * sizeof(float);
+
+        // Sanity check - if sizes don't match, log it and use the larger one
+        if (expectedBufferSize != ourBufferSize)
+        {
+            swprintf_s(buf, L"Buffer size mismatch! Expected: %lld, Calculated: %lld",
+                       expectedBufferSize, ourBufferSize);
+            dbg.push_back(buf);
+            LogToFile(dbg, m_logFilePath);
+        }
+
+        // Allocate buffer using the size OpenVDS expects
+        size_t bufferFloatCount = static_cast<size_t>(expectedBufferSize / sizeof(float));
+        std::vector<float> buffer(bufferFloatCount);
 
         // Log before request to help diagnose hangs
 #ifdef OPENVDS_SINGLE_THREADED
@@ -1018,6 +1080,27 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         LogToFile(dbg, m_logFilePath);
 
         swprintf_s(buf, L"Requesting LOD%d slice (%dx%d voxels)...", selectedLOD, lodDim0Size, lodDim1Size);
+        dbg.push_back(buf);
+        LogToFile(dbg, m_logFilePath);
+
+        // Check for cancellation before expensive VDS request
+        if (IsCancelRequested())
+        {
+            dbg.push_back(L"Cancelled before VDS request");
+            LogToFile(dbg, m_logFilePath);
+            m_lastRenderDebugMessages = std::move(dbg);
+            return nullptr;
+        }
+
+        // Diagnostic: dump all request parameters to log
+        swprintf_s(buf, L"voxelMin: [%d, %d, %d, %d, %d, %d]",
+                   voxelMin[0], voxelMin[1], voxelMin[2], voxelMin[3], voxelMin[4], voxelMin[5]);
+        dbg.push_back(buf);
+        swprintf_s(buf, L"voxelMax: [%d, %d, %d, %d, %d, %d]",
+                   voxelMax[0], voxelMax[1], voxelMax[2], voxelMax[3], voxelMax[4], voxelMax[5]);
+        dbg.push_back(buf);
+        swprintf_s(buf, L"LOD: %d, fullResDim: %d, bufferSize: %zu floats (%lld expected)",
+                   selectedLOD, fullResDim, buffer.size(), (long long)expectedBufferSize);
         dbg.push_back(buf);
         LogToFile(dbg, m_logFilePath);
 

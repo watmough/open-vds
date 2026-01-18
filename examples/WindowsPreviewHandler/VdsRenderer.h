@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <chrono>
+#include <atomic>
 
 #include <OpenVDS/OpenVDS.h>
 #include <OpenVDS/VolumeDataLayout.h>
@@ -76,7 +77,17 @@ public:
     // Call this before destroying the renderer to avoid orphaned requests
     void WaitForPendingRender() { std::lock_guard<std::mutex> lock(m_renderMutex); }
 
+    // Request cancellation of in-progress render (for responsiveness when slice changes)
+    // This is non-blocking - the render will check this flag periodically
+    void RequestCancel() { m_cancelRequested.store(true, std::memory_order_release); }
+
+    // Check if cancellation was requested
+    bool IsCancelRequested() const { return m_cancelRequested.load(std::memory_order_acquire); }
+
 private:
+    // Clear cancel flag (called at start of render)
+    void ClearCancelFlag() { m_cancelRequested.store(false, std::memory_order_release); }
+    std::atomic<bool> m_cancelRequested{false};  // Signal to cancel in-progress render
     std::vector<std::wstring> m_lastRenderDebugMessages;
     std::string m_logFilePath;
     OpenVDS::VDSHandle m_vdsHandle;

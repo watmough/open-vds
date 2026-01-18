@@ -888,7 +888,34 @@ VolumeDataPageAccessorImpl::FetchedData VolumeDataPageAccessorImpl::FetchPageDat
 
   if (!pageImpl->RequestPrepared())
   {
-    result.success = true;  // Page already has data
+    // Page should already have valid data - validate this assumption
+    const DataBlock& db = pageImpl->GetDataBlock();
+    if (db.Dimensionality < 1 || db.Dimensionality > DataBlock::Dimensionality_Max)
+    {
+      m_logger.LogError(fmt::format("FetchPageData: RequestPrepared=false but DataBlock is invalid! "
+        "Dimensionality={}, chunk={}", (int)db.Dimensionality, pageImpl->GetChunkIndex()));
+      // This is a logic error - page claims to have data but doesn't
+      assert(false && "FetchPageData: Page claims to have data (RequestPrepared=false) but DataBlock is invalid");
+      result.success = false;
+      result.error.code = -1;
+      result.error.string = "Page has invalid DataBlock despite RequestPrepared=false";
+      return result;
+    }
+    // Validate AllocatedSize values are reasonable
+    for (int i = 0; i < db.Dimensionality; i++)
+    {
+      if (db.AllocatedSize[i] <= 0 || db.AllocatedSize[i] > 100000)
+      {
+        m_logger.LogError(fmt::format("FetchPageData: RequestPrepared=false but AllocatedSize[{}]={} is invalid! chunk={}",
+          i, db.AllocatedSize[i], pageImpl->GetChunkIndex()));
+        assert(false && "FetchPageData: Page has invalid AllocatedSize despite RequestPrepared=false");
+        result.success = false;
+        result.error.code = -1;
+        result.error.string = "Page has invalid AllocatedSize despite RequestPrepared=false";
+        return result;
+      }
+    }
+    result.success = true;  // Page already has data (validated)
     return result;
   }
 
@@ -957,17 +984,9 @@ bool VolumeDataPageAccessorImpl::DecompressPageData(VolumeDataPageImpl* pageImpl
     return false;
   }
 
-  // If FetchPageData handled async prefetch, the page should already have data
-  if (fetchedData.serializedData.empty() && !fetchedData.sparse)
-  {
-    pageListMutexLock.lock();
-    m_pagesRead++;
-    pageImpl->SetRequestPrepared(false);
-    pageImpl->LeaveSettingData();
-    m_pageReadCondition.notify_all();
-    LimitPageListSize(m_maxPages, pageListMutexLock);
-    return m_layer != nullptr;
-  }
+  // Note: Empty serializedData with !sparse can occur for constant value chunks.
+  // Let DeserializeVolumeData handle all cases - it will fill data for constants
+  // or fail with an appropriate error if the data is truly missing.
 
   Error error;
   std::vector<uint8_t> page_data;
