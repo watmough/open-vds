@@ -24,6 +24,7 @@
 #include <propsys.h>
 
 #include "VdsRenderer.h"
+#include "version.h"
 #include <cstdarg>
 #include <fstream>
 #include <memory>

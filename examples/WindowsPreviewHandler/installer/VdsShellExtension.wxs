@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!--
+    VDS Shell Extension Installer (WiX 5)
+    Installs preview and thumbnail handlers for .vds files
+  -->
+
+  <Package Name="VDS Shell Extension"
+           Language="1033"
+           Version="0.8.0.0"
+           Manufacturer="OpenVDS Project"
+           UpgradeCode="E7A3B5C1-4D2F-4E8A-9B6C-1F2E3D4A5B6C"
+           InstallerVersion="500"
+           Compressed="yes"
+           Scope="perMachine">
+
+    <!-- Upgrade handling - removes older versions -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed."/>
+
+    <!-- Embed CAB in MSI -->
+    <MediaTemplate EmbedCab="yes"/>
+
+    <!-- Install directory structure (64-bit Program Files) -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="VDSShellExtension">
+
+        <!-- OpenVDS DLL -->
+        <Component Id="OpenVdsDll" Guid="A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D">
+          <File Id="openvds.dll"
+                Name="openvds.dll"
+                Source="$(StagingDir)\openvds.dll"/>
+        </Component>
+
+        <!-- VdsShellExtension DLL with all registry entries -->
+        <Component Id="VdsShellExtensionDll" Guid="B2C3D4E5-F6A7-5B6C-9D0E-1F2A3B4C5D6E">
+          <File Id="VdsShellExtension.dll"
+                Name="VdsShellExtension.dll"
+                Source="$(StagingDir)\VdsShellExtension.dll"/>
+
+          <!-- File Association: .vds -> OpenVDS.Document -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\.vds">
+            <RegistryValue Type="string" Value="OpenVDS.Document"/>
+          </RegistryKey>
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document">
+            <RegistryValue Type="string" Value="OpenVDS Volume Data"/>
+          </RegistryKey>
+          <!-- Default open command (required for shell extensions to activate) -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document\shell\open\command">
+            <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]VdsShellExtension.dll&quot; &quot;%1&quot;"/>
+          </RegistryKey>
+
+          <!-- Thumbnail Handler CLSID Registration -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\CLSID\{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}">
+            <RegistryValue Type="string" Value="VDS Thumbnail Handler"/>
+          </RegistryKey>
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\CLSID\{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}\InprocServer32">
+            <RegistryValue Type="string" Value="[INSTALLFOLDER]VdsShellExtension.dll"/>
+            <RegistryValue Name="ThreadingModel" Type="string" Value="Apartment"/>
+          </RegistryKey>
+
+          <!-- Thumbnail Handler ShellEx Association -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\.vds\ShellEx\{e357fccd-a995-4576-b01f-234630154e96}">
+            <RegistryValue Type="string" Value="{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}"/>
+          </RegistryKey>
+
+          <!-- Preview Handler CLSID Registration -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\CLSID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}">
+            <RegistryValue Type="string" Value="VDS Preview Handler"/>
+            <RegistryValue Name="AppID" Type="string" Value="{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"/>
+          </RegistryKey>
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\CLSID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}\InprocServer32">
+            <RegistryValue Type="string" Value="[INSTALLFOLDER]VdsShellExtension.dll"/>
+            <RegistryValue Name="ThreadingModel" Type="string" Value="Apartment"/>
+          </RegistryKey>
+
+          <!-- Preview Handler AppID for surrogate process isolation -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\AppID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}">
+            <RegistryValue Name="DllSurrogate" Type="string" Value=""/>
+          </RegistryKey>
+
+          <!-- Preview Handler ShellEx Association -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\.vds\ShellEx\{8895b1c6-b41f-4c1c-a562-0d564250836f}">
+            <RegistryValue Type="string" Value="{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"/>
+          </RegistryKey>
+
+          <!-- Preview Handlers List -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers">
+            <RegistryValue Name="{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"
+                           Type="string"
+                           Value="VDS Preview Handler"/>
+          </RegistryKey>
+        </Component>
+
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Feature definition -->
+    <Feature Id="ProductFeature" Title="VDS Shell Extension" Level="1">
+      <ComponentRef Id="OpenVdsDll"/>
+      <ComponentRef Id="VdsShellExtensionDll"/>
+    </Feature>
+
+    <!-- UI - Minimal dialog -->
+    <ui:WixUI Id="WixUI_Minimal"/>
+
+    <!-- Custom action to notify shell of file association changes -->
+    <!-- Without this, Windows won't recognize the new associations until reboot -->
+    <!-- Run ie4uinit.exe -show to refresh shell icon cache and file associations -->
+    <CustomAction Id="NotifyShell"
+                  Execute="immediate"
+                  Return="ignore"
+                  Impersonate="yes"
+                  Directory="SystemFolder"
+                  ExeCommand="ie4uinit.exe -show"/>
+
+    <StandardDirectory Id="SystemFolder"/>
+
+    <InstallExecuteSequence>
+      <Custom Action="NotifyShell" After="InstallFinalize" Condition="NOT REMOVE"/>
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

@@ -5,6 +5,7 @@ if(WIN32)
     VdsRenderer.cpp
     VdsRenderer.h
     VdsShellExtension.def
+    version.h
   )
 
   target_link_libraries(VdsShellExtension
@@ -75,6 +76,9 @@ if(WIN32)
   install(TARGETS VdsRenderTest
     RUNTIME DESTINATION bin
   )
+
+  # MSI Installer (requires WiX Toolset)
+  add_subdirectory(installer)
 
 else()
   message(STATUS "VdsShellExtension is only available on Windows")
