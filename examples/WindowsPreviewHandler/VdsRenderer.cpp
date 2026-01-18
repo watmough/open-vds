@@ -141,10 +141,9 @@ static void LogToFile(const std::vector<std::wstring>& lines, const std::string&
 // LOD optimization: Use higher LODs (lower resolution) for faster rendering
 // when the display size doesn't require full resolution data.
 // Higher LODs return smaller buffers - LOD N returns data at 1/(2^N) resolution per axis.
-// TEMPORARILY DISABLED: Progressive LOD refinement causes crashes with IStream
-// after multiple reads corrupt stream state. Use target LOD directly.
+// LOD optimization with progressive refinement - starts fast, refines if quick
 static constexpr bool ENABLE_LOD_OPTIMIZATION = true;
-static constexpr bool ENABLE_PROGRESSIVE_LOD = false;  // Disable progressive refinement
+static constexpr bool ENABLE_PROGRESSIVE_LOD = true;  // Enable progressive refinement
 
 // Calculate the number of voxels at a given LOD for a range [voxelMin, voxelMax)
 // At LOD 0, returns voxelMax - voxelMin. At LOD 1, returns half that, etc.
