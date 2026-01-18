@@ -49,7 +49,8 @@ public:
     // dimension: 0=inline, 1=crossline, 2=timeslice/depth
     // sliceIndex: which slice to render
     // maxSize: maximum dimension for output bitmap
-    HBITMAP RenderSlice(int dimension, int sliceIndex, int maxSize);
+    // useProgressiveLOD: if true, use progressive LOD (preview pane); if false, go straight to target LOD (thumbnails)
+    HBITMAP RenderSlice(int dimension, int sliceIndex, int maxSize, bool useProgressiveLOD = true);
 
     // Get the number of slices for a dimension
     int GetSliceCount(int dimension) const;

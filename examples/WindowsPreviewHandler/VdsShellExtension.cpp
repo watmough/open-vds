@@ -148,9 +148,10 @@ public:
                 return E_FAIL;
 
             // Render middle slice of the first dimension
+            // Use useProgressiveLOD=false for thumbnails - go straight to target LOD
             int sliceOnDimension = renderer.GetDimensionality() - 1;
             int sliceIndex = renderer.GetDefaultSliceIndex(sliceOnDimension);
-            HBITMAP hBitmap = renderer.RenderSlice(sliceOnDimension, sliceIndex, cx);
+            HBITMAP hBitmap = renderer.RenderSlice(sliceOnDimension, sliceIndex, cx, false);
 
             if (!hBitmap)
                 return E_FAIL;

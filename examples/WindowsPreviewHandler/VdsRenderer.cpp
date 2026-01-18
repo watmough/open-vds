@@ -820,7 +820,7 @@ static HBITMAP ScaleBitmap(HBITMAP hSource, int maxSize)
     return hDest ? hDest : hSource;
 }
 
-HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSize)
+HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSize, bool useProgressiveLOD)
 {
     // Prevent concurrent render requests - only one render at a time
     std::lock_guard<std::mutex> lock(m_renderMutex);
@@ -962,17 +962,31 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         int targetLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
                                          dim0Size, dim1Size, maxSize);
 
-        // Get max available LOD (highest number = lowest quality = fastest)
-        int maxLOD = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels()) - 1;
-        if (maxLOD < 0) maxLOD = 0;
+        // Get max available LOD for this specific dimension group
+        // (highest number = lowest quality = fastest)
+        // Must check availability per-dimGroup as different groups may have different LODs
+        int lodCount = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels());
+        int maxLOD = 0;
+        for (int lod = lodCount - 1; lod >= 0; lod--)
+        {
+            auto status = accessManager.GetVDSProduceStatus(dimGroup, lod, 0);
+            if (status != OpenVDS::VDSProduceStatus::Unavailable)
+            {
+                maxLOD = lod;
+                break;
+            }
+        }
 
         int selectedLOD = targetLOD;
 
-        if (ENABLE_PROGRESSIVE_LOD)
+        // Track whether this is a slice change (for progressive LOD timing logic)
+        bool sliceChanged = false;
+
+        if (ENABLE_PROGRESSIVE_LOD && useProgressiveLOD)
         {
             // Progressive LOD loading: start fast, refine if quick
             // Check if slice or dimension changed - reset to fastest LOD
-            bool sliceChanged = (sliceIndex != m_lastSliceIndex || sliceOnDimension != m_lastDimension);
+            sliceChanged = (sliceIndex != m_lastSliceIndex || sliceOnDimension != m_lastDimension);
             if (sliceChanged)
             {
                 m_currentLOD = maxLOD;  // Start with fastest (lowest quality)
@@ -994,6 +1008,13 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
                 m_currentLOD--;  // Try better quality
             }
 
+            // If a high LOD render was slow (>=50ms), jump straight to target LOD
+            // instead of stepping through intermediate LODs
+            if (m_isRefining && !sliceChanged && m_lastRenderTimeMs >= FAST_RENDER_THRESHOLD_MS && m_currentLOD > targetLOD)
+            {
+                m_currentLOD = targetLOD;  // Jump to target
+            }
+
             // Don't go below target LOD - stop refining when we reach it
             if (m_currentLOD <= targetLOD)
             {
@@ -1005,7 +1026,7 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         }
         else
         {
-            // Progressive LOD disabled - go straight to target
+            // Progressive LOD disabled (or thumbnails) - go straight to target
             m_currentLOD = targetLOD;
             m_isRefining = false;
             m_lastSliceIndex = sliceIndex;
@@ -1270,11 +1291,9 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
                    m_isRefining ? L"(refining)" : L"(stable)");
         dbg.push_back(buf);
 
-        // If render was slow, stop refining
-        if (m_lastRenderTimeMs >= FAST_RENDER_THRESHOLD_MS)
-        {
-            m_isRefining = false;
-        }
+        // Note: Slow render handling is done at the START of the next render
+        // (jump directly to target LOD if previous render was slow)
+        // This allows the timer to trigger another render and apply the jump logic
 
         // Store debug messages for preview handler to display
         m_lastRenderDebugMessages = std::move(dbg);
