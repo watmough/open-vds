@@ -39,11 +39,17 @@ public:
     VdsRenderer();
     ~VdsRenderer();
 
-    // Initialize from IStream
+    // Initialize from IStream (for shell extension preview handler)
     bool Initialize(IStream* pStream);
 
-    // Get metadata as formatted text lines
+    // Initialize from file path (for standalone viewer)
+    bool Initialize(const char* filePath);
+
+    // Get metadata as formatted text lines (basic info: dimensions, channels, dimension groups)
     std::vector<std::wstring> GetMetadataLines() const;
+
+    // Get technical info as formatted text lines (compression, brick size, adaptive levels)
+    std::vector<std::wstring> GetTechnicalInfoLines() const;
 
     // Render a slice to an HBITMAP
     // dimension: 0=inline, 1=crossline, 2=timeslice/depth
@@ -64,6 +70,37 @@ public:
 
     // Set the log file path (for debugging)
     void SetLogFile(const char* logFilePath);
+
+    // Set whether to prefer dimension groups with LODs when available
+    void SetPreferLODs(bool prefer) { m_preferLODs = prefer; }
+    bool GetPreferLODs() const { return m_preferLODs; }
+
+    // Wavelet adaptive compression settings (must be set before Initialize)
+    // These control how much wavelet data is decompressed - higher tolerance/ratio = faster, lower quality
+    void SetWaveletAdaptiveMode(OpenVDS::WaveletAdaptiveMode mode) { m_waveletAdaptiveMode = mode; }
+    OpenVDS::WaveletAdaptiveMode GetWaveletAdaptiveMode() const { return m_waveletAdaptiveMode; }
+
+    // Tolerance mode: higher tolerance = faster decompression, lower quality
+    // Range: 0.01 (best quality) to 1.0+ (fastest, lowest quality)
+    // The effective level is log2(tolerance / originalTolerance)
+    void SetWaveletAdaptiveTolerance(float tolerance) { m_waveletAdaptiveTolerance = tolerance; }
+    float GetWaveletAdaptiveTolerance() const { return m_waveletAdaptiveTolerance; }
+
+    // Ratio mode: compression ratio (uncompressed/compressed)
+    // Range: 1.0 (best quality) to 100.0+ (fastest, uses most compressed level)
+    // e.g., ratio=10.0 means use level where data is ~10% of uncompressed size
+    void SetWaveletAdaptiveRatio(float ratio) { m_waveletAdaptiveRatio = ratio; }
+    float GetWaveletAdaptiveRatio() const { return m_waveletAdaptiveRatio; }
+
+    // Get the last selected dimension group info (for status display)
+    const std::wstring& GetLastDimensionGroup() const { return m_lastDimGroupName; }
+    int GetLastLODCount() const { return m_lastLODCount; }
+    int GetLastSelectedLOD() const { return m_lastSelectedLOD; }
+
+    // Set user-specified target LOD (overrides automatic LOD selection based on display size)
+    // Set to -1 to use automatic selection (default)
+    void SetUserTargetLOD(int lod) { m_userTargetLOD = lod; }
+    int GetUserTargetLOD() const { return m_userTargetLOD; }
 
     // Get VDS name from metadata
     std::wstring GetVdsName() const;
@@ -95,6 +132,16 @@ private:
     OpenVDS::VolumeDataLayout* m_layout;
     IStream* m_stream;          // Stream reference
     mutable std::mutex m_renderMutex;  // Prevent concurrent render requests
+    bool m_preferLODs = false;  // Prefer dimension groups with LODs when available
+    std::wstring m_lastDimGroupName;  // Last selected dimension group name
+    int m_lastLODCount = 0;           // Number of LODs available for last selected group
+    int m_lastSelectedLOD = 0;        // LOD used for last render
+    int m_userTargetLOD = -1;         // User-specified target LOD (-1 = auto)
+
+    // Wavelet adaptive compression settings
+    OpenVDS::WaveletAdaptiveMode m_waveletAdaptiveMode = OpenVDS::WaveletAdaptiveMode::BestQuality;
+    float m_waveletAdaptiveTolerance = 0.01f;
+    float m_waveletAdaptiveRatio = 1.0f;
 
     // Progressive LOD state - start with fastest LOD, refine if renders are quick
     int m_currentLOD = -1;           // Current LOD being displayed (-1 = not set)

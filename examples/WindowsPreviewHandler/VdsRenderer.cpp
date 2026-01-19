@@ -309,6 +309,112 @@ bool VdsRenderer::Initialize(IStream* pStream)
     // Note: OpenVDS must be built with OPENVDS_SINGLE_THREADED to work
     // in prevhost.exe (preview handler), otherwise COM marshaling deadlocks
     OpenVDS::IStreamOpenOptions options(pStream);
+
+    // Apply wavelet adaptive compression settings
+    options.waveletAdaptiveMode = m_waveletAdaptiveMode;
+    options.waveletAdaptiveTolerance = m_waveletAdaptiveTolerance;
+    options.waveletAdaptiveRatio = m_waveletAdaptiveRatio;
+
+    // Log adaptive settings
+    const wchar_t* modeStr = L"BestQuality";
+    if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Tolerance)
+        modeStr = L"Tolerance";
+    else if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Ratio)
+        modeStr = L"Ratio";
+    swprintf_s(buf, L"Adaptive: %s (tol=%.3f, ratio=%.1f)", modeStr, m_waveletAdaptiveTolerance, m_waveletAdaptiveRatio);
+    dbg.push_back(buf);
+
+    OpenVDS::Error error;
+    m_vdsHandle = OpenVDS::Open(options, error);
+
+    if (error.code != 0 || !m_vdsHandle)
+    {
+        swprintf_s(buf, L"OpenVDS::Open failed: %d", error.code);
+        dbg.push_back(buf);
+        wchar_t wMsg[256];
+        MultiByteToWideChar(CP_UTF8, 0, error.string.c_str(), -1, wMsg, 256);
+        dbg.push_back(wMsg);
+        LogToFile(dbg, m_logFilePath);
+        return false;
+    }
+
+    m_layout = OpenVDS::GetLayout(m_vdsHandle);
+    if (!m_layout)
+    {
+        dbg.push_back(L"Failed to get layout");
+        LogToFile(dbg, m_logFilePath);
+        return false;
+    }
+
+    // Log success with dimension info
+    int dims = m_layout->GetDimensionality();
+    swprintf_s(buf, L"Opened %dD VDS successfully", dims);
+    dbg.push_back(buf);
+
+    std::wstring dimStr = L"Dims: ";
+    for (int i = 0; i < dims; i++)
+    {
+        if (i > 0) dimStr += L" x ";
+        swprintf_s(buf, L"%d", m_layout->GetDimensionNumSamples(i));
+        dimStr += buf;
+    }
+    dbg.push_back(dimStr);
+    LogToFile(dbg, m_logFilePath);
+
+    return true;
+}
+
+bool VdsRenderer::Initialize(const char* filePath)
+{
+    if (!filePath)
+        return false;
+
+    std::vector<std::wstring> dbg;
+    wchar_t buf[256];
+    dbg.push_back(L"VdsRenderer::Initialize(filePath)");
+
+    // Convert path to wide string for logging
+    wchar_t wPath[MAX_PATH];
+    MultiByteToWideChar(CP_UTF8, 0, filePath, -1, wPath, MAX_PATH);
+    dbg.push_back(wPath);
+
+    // Clean up any previous state
+    if (m_vdsHandle)
+    {
+        OpenVDS::Error error;
+        OpenVDS::Close(m_vdsHandle, error);
+        m_vdsHandle = nullptr;
+    }
+    m_layout = nullptr;
+    if (m_stream)
+    {
+        m_stream->Release();
+        m_stream = nullptr;
+    }
+
+    // Reset progressive LOD state
+    m_currentLOD = -1;
+    m_lastSliceIndex = -1;
+    m_lastDimension = -1;
+    m_isRefining = true;
+
+    // Open VDS directly from file path with adaptive compression settings
+    OpenVDS::VDSFileOpenOptions options(filePath);
+
+    // Apply wavelet adaptive compression settings
+    options.waveletAdaptiveMode = m_waveletAdaptiveMode;
+    options.waveletAdaptiveTolerance = m_waveletAdaptiveTolerance;
+    options.waveletAdaptiveRatio = m_waveletAdaptiveRatio;
+
+    // Log adaptive settings
+    const wchar_t* modeStr = L"BestQuality";
+    if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Tolerance)
+        modeStr = L"Tolerance";
+    else if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Ratio)
+        modeStr = L"Ratio";
+    swprintf_s(buf, L"Adaptive: %s (tol=%.3f, ratio=%.1f)", modeStr, m_waveletAdaptiveTolerance, m_waveletAdaptiveRatio);
+    dbg.push_back(buf);
+
     OpenVDS::Error error;
     m_vdsHandle = OpenVDS::Open(options, error);
 
@@ -359,17 +465,11 @@ std::vector<std::wstring> VdsRenderer::GetMetadataLines() const
         return lines;
     }
 
-    wchar_t buf[256];
+    wchar_t buf[512];
 
-    // Header with VDS name
-    std::wstring name = GetVdsName();
-    swprintf_s(buf, L"VDS: %s", name.c_str());
-    lines.push_back(buf);
-    lines.push_back(L"");
-
-    // Dimensions - compact format
+    // Dimensions
     int dims = m_layout->GetDimensionality();
-    swprintf_s(buf, L"Dimensions: %dD", dims);
+    swprintf_s(buf, L"Dimensions: %d", dims);
     lines.push_back(buf);
 
     for (int dim = 0; dim < dims; dim++)
@@ -379,7 +479,8 @@ std::vector<std::wstring> VdsRenderer::GetMetadataLines() const
         MultiByteToWideChar(CP_UTF8, 0, axis.GetName(), -1, axisName, 32);
         MultiByteToWideChar(CP_UTF8, 0, axis.GetUnit(), -1, unit, 16);
 
-        swprintf_s(buf, L"  %s: %d [%.1f..%.1f] %s",
+        swprintf_s(buf, L"  [%d] %s: %d samples (%.2f to %.2f %s)",
+                   dim,
                    axisName,
                    m_layout->GetDimensionNumSamples(dim),
                    axis.GetCoordinateMin(),
@@ -387,101 +488,193 @@ std::vector<std::wstring> VdsRenderer::GetMetadataLines() const
                    unit);
         lines.push_back(buf);
     }
-    lines.push_back(L"");
 
-    // Channels - compact format
+    // Channels
     int chCount = m_layout->GetChannelCount();
     swprintf_s(buf, L"Channels: %d", chCount);
     lines.push_back(buf);
 
-    for (int ch = 0; ch < chCount && ch < 4; ch++)
+    for (int ch = 0; ch < chCount && ch < 8; ch++)
     {
         auto channel = m_layout->GetChannelDescriptor(ch);
-        wchar_t chName[32];
-        MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, chName, 32);
+        wchar_t chName[64];
+        MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, chName, 64);
 
-        swprintf_s(buf, L"  %s [%.2e..%.2e]",
-                   chName,
-                   channel.GetValueRangeMin(),
-                   channel.GetValueRangeMax());
+        swprintf_s(buf, L"  [%d] %s", ch, chName);
         lines.push_back(buf);
     }
-    if (chCount > 4)
+    if (chCount > 8)
     {
-        swprintf_s(buf, L"  ... +%d more", chCount - 4);
+        swprintf_s(buf, L"  ... +%d more", chCount - 8);
         lines.push_back(buf);
     }
-    lines.push_back(L"");
 
-    // Compression - single line
-    OpenVDS::CompressionMethod compression = OpenVDS::GetCompressionMethod(m_vdsHandle);
-    const wchar_t* compName = L"Unknown";
-    switch (compression)
-    {
-    case OpenVDS::CompressionMethod::None: compName = L"None"; break;
-    case OpenVDS::CompressionMethod::Wavelet: compName = L"Wavelet"; break;
-    case OpenVDS::CompressionMethod::RLE: compName = L"RLE"; break;
-    case OpenVDS::CompressionMethod::Zip: compName = L"Zip"; break;
-    case OpenVDS::CompressionMethod::WaveletLossless: compName = L"Wavelet (Lossless)"; break;
-    }
-
-    if (compression == OpenVDS::CompressionMethod::Wavelet)
-    {
-        float tolerance = OpenVDS::GetCompressionTolerance(m_vdsHandle);
-        swprintf_s(buf, L"Compression: %s (tol: %.2f)", compName, tolerance);
-    }
-    else
-    {
-        swprintf_s(buf, L"Compression: %s", compName);
-    }
-    lines.push_back(buf);
-
-    // Brick size and LOD levels
-    auto layoutDescriptor = m_layout->GetLayoutDescriptor();
-    int brickSize = 1 << layoutDescriptor.GetBrickSize();
-    int lodLevels = static_cast<int>(layoutDescriptor.GetLODLevels());
-    swprintf_s(buf, L"Brick Size: %d, LOD Levels: %d", brickSize, lodLevels);
-    lines.push_back(buf);
-    lines.push_back(L"");
-
-    // Dimension groups availability
+    // Dimension Groups with LOD availability and Normal/Remapped status
     lines.push_back(L"Dimension Groups:");
     OpenVDS::VolumeDataAccessManager accessManager = OpenVDS::GetAccessManager(m_vdsHandle);
+    auto layoutDescriptor = m_layout->GetLayoutDescriptor();
+    int lodLevels = static_cast<int>(layoutDescriptor.GetLODLevels());
 
     struct DimGroupInfo {
         OpenVDS::DimensionsND group;
         const wchar_t* name;
     };
     DimGroupInfo groups[] = {
-        { OpenVDS::Dimensions_01, L"01" },
-        { OpenVDS::Dimensions_02, L"02" },
-        { OpenVDS::Dimensions_12, L"12" },
-        { OpenVDS::Dimensions_012, L"012" },
-        { OpenVDS::Dimensions_013, L"013" },
-        { OpenVDS::Dimensions_023, L"023" },
-        { OpenVDS::Dimensions_123, L"123" },
+        { OpenVDS::Dimensions_01, L"Dimensions_01" },
+        { OpenVDS::Dimensions_02, L"Dimensions_02" },
+        { OpenVDS::Dimensions_12, L"Dimensions_12" },
+        { OpenVDS::Dimensions_012, L"Dimensions_012" },
+        { OpenVDS::Dimensions_013, L"Dimensions_013" },
+        { OpenVDS::Dimensions_023, L"Dimensions_023" },
+        { OpenVDS::Dimensions_123, L"Dimensions_123" },
     };
 
-    std::wstring availGroups;
     for (const auto& dg : groups)
     {
-        auto status = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
-        if (status == OpenVDS::VDSProduceStatus::Normal)
+        auto status0 = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
+        if (status0 == OpenVDS::VDSProduceStatus::Unavailable)
+            continue;
+
+        std::wstring lodList;
+        for (int lod = 0; lod < lodLevels; lod++)
         {
-            if (!availGroups.empty()) availGroups += L", ";
-            availGroups += dg.name;
+            auto status = accessManager.GetVDSProduceStatus(dg.group, lod, 0);
+            if (status != OpenVDS::VDSProduceStatus::Unavailable)
+            {
+                if (!lodList.empty()) lodList += L", ";
+                lodList += std::to_wstring(lod);
+            }
         }
-        else if (status == OpenVDS::VDSProduceStatus::Remapped)
+
+        const wchar_t* statusStr = (status0 == OpenVDS::VDSProduceStatus::Remapped) ? L" [Remapped]" : L"";
+        swprintf_s(buf, L"  %s (LOD: %s)%s", dg.name, lodList.c_str(), statusStr);
+        lines.push_back(buf);
+    }
+
+    return lines;
+}
+
+std::vector<std::wstring> VdsRenderer::GetTechnicalInfoLines() const
+{
+    std::vector<std::wstring> lines;
+
+    if (!m_layout)
+        return lines;
+
+    wchar_t buf[512];
+    auto layoutDescriptor = m_layout->GetLayoutDescriptor();
+
+    lines.push_back(L"Technical:");
+
+    // Brick size
+    int brickSize = 1 << layoutDescriptor.GetBrickSize();
+    swprintf_s(buf, L"  Brick Size: %d", brickSize);
+    lines.push_back(buf);
+
+    // Compression
+    OpenVDS::CompressionMethod compression = OpenVDS::GetCompressionMethod(m_vdsHandle);
+    const wchar_t* compName = L"Unknown";
+    bool isLossyWavelet = false;
+    switch (compression)
+    {
+    case OpenVDS::CompressionMethod::None:
+        compName = L"None";
+        break;
+    case OpenVDS::CompressionMethod::Wavelet:
+        compName = L"Wavelet (Lossy)";
+        isLossyWavelet = true;
+        break;
+    case OpenVDS::CompressionMethod::RLE:
+        compName = L"RLE";
+        break;
+    case OpenVDS::CompressionMethod::Zip:
+        compName = L"Zip";
+        break;
+    case OpenVDS::CompressionMethod::WaveletNormalizeBlock:
+        compName = L"Wavelet NormBlock (Lossy)";
+        isLossyWavelet = true;
+        break;
+    case OpenVDS::CompressionMethod::WaveletLossless:
+        compName = L"Wavelet (Lossless)";
+        break;
+    case OpenVDS::CompressionMethod::WaveletNormalizeBlockLossless:
+        compName = L"Wavelet NormBlock (Lossless)";
+        break;
+    }
+
+    swprintf_s(buf, L"  Compression: %s", compName);
+    lines.push_back(buf);
+
+    // Tolerance for lossy wavelet
+    if (isLossyWavelet)
+    {
+        float tolerance = OpenVDS::GetCompressionTolerance(m_vdsHandle);
+        swprintf_s(buf, L"  Tolerance: %.4f", tolerance);
+        lines.push_back(buf);
+    }
+
+    // Wavelet adaptive levels
+    if (OpenVDS::CompressionMethod_IsWavelet(compression))
+    {
+        auto adaptiveLevels = OpenVDS::GetWaveletAdaptiveLevels(m_vdsHandle);
+        if (!adaptiveLevels.empty())
         {
-            if (!availGroups.empty()) availGroups += L", ";
-            availGroups += dg.name;
-            availGroups += L"(R)";
+            swprintf_s(buf, L"  Adaptive Levels: %zu", adaptiveLevels.size());
+            lines.push_back(buf);
+            for (size_t i = 0; i < adaptiveLevels.size() && i < 3; i++)
+            {
+                const auto& level = adaptiveLevels[i];
+                float sizeMB = static_cast<float>(level.compressedSize) / (1024.0f * 1024.0f);
+                swprintf_s(buf, L"    [%zu] tol=%.4f ratio=%.1f:1 (%.1f MB)",
+                           i, level.compressionTolerance, level.compressionRatio, sizeMB);
+                lines.push_back(buf);
+            }
+            if (adaptiveLevels.size() > 3)
+            {
+                swprintf_s(buf, L"    ... +%zu more", adaptiveLevels.size() - 3);
+                lines.push_back(buf);
+            }
         }
     }
-    if (availGroups.empty())
-        availGroups = L"(none)";
-    swprintf_s(buf, L"  Available: %s", availGroups.c_str());
-    lines.push_back(buf);
+
+    // Per-channel compression flags (only show if any channel has special flags)
+    int chCount = m_layout->GetChannelCount();
+    bool hasChannelFlags = false;
+    for (int ch = 0; ch < chCount; ch++)
+    {
+        if (!m_layout->IsChannelAllowingLossyCompression(ch) ||
+            m_layout->IsChannelUseZipForLosslessCompression(ch))
+        {
+            hasChannelFlags = true;
+            break;
+        }
+    }
+    if (hasChannelFlags)
+    {
+        lines.push_back(L"  Channel Compression:");
+        for (int ch = 0; ch < chCount && ch < 8; ch++)
+        {
+            auto channel = m_layout->GetChannelDescriptor(ch);
+            wchar_t chName[32];
+            MultiByteToWideChar(CP_UTF8, 0, channel.GetName(), -1, chName, 32);
+
+            bool allowsLossy = m_layout->IsChannelAllowingLossyCompression(ch);
+            bool useZip = m_layout->IsChannelUseZipForLosslessCompression(ch);
+
+            const wchar_t* flags = L"";
+            if (!allowsLossy && useZip)
+                flags = L"Lossless/Zip";
+            else if (!allowsLossy)
+                flags = L"Lossless";
+            else if (useZip)
+                flags = L"Zip";
+            else
+                flags = L"Default";
+
+            swprintf_s(buf, L"    [%d] %s: %s", ch, chName, flags);
+            lines.push_back(buf);
+        }
+    }
 
     return lines;
 }
@@ -947,25 +1140,80 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             { OpenVDS::Dimensions_012, L"012" },
         };
         OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_01;
+        const wchar_t* selectedGroupName = L"01";
+        int lodCount = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels());
 
-        for (const auto& dg : allGroups)
+        int selectedLODCount = 1;
+        if (m_preferLODs && lodCount > 1)
         {
-            auto status = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
-            if (status == OpenVDS::VDSProduceStatus::Normal)
+            // Prefer dimension groups that have multiple LODs available
+            int bestLODCount = 0;
+            for (const auto& dg : allGroups)
             {
-                dimGroup = dg.group;
-                break;
+                auto status0 = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
+                if (status0 == OpenVDS::VDSProduceStatus::Unavailable)
+                    continue;
+
+                // Count available LODs for this group
+                int availableLODs = 0;
+                for (int lod = 0; lod < lodCount; lod++)
+                {
+                    auto status = accessManager.GetVDSProduceStatus(dg.group, lod, 0);
+                    if (status != OpenVDS::VDSProduceStatus::Unavailable)
+                        availableLODs++;
+                }
+
+                if (availableLODs > bestLODCount)
+                {
+                    bestLODCount = availableLODs;
+                    dimGroup = dg.group;
+                    selectedGroupName = dg.name;
+                    selectedLODCount = availableLODs;
+                }
+            }
+            swprintf_s(buf, L"PreferLODs: selected %s with %d LODs", selectedGroupName, bestLODCount);
+            dbg.push_back(buf);
+        }
+        else
+        {
+            // Default: pick first available group
+            for (const auto& dg : allGroups)
+            {
+                auto status0 = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
+                if (status0 == OpenVDS::VDSProduceStatus::Normal)
+                {
+                    dimGroup = dg.group;
+                    selectedGroupName = dg.name;
+                    // Count LODs for this group
+                    selectedLODCount = 0;
+                    for (int lod = 0; lod < lodCount; lod++)
+                    {
+                        auto status = accessManager.GetVDSProduceStatus(dg.group, lod, 0);
+                        if (status != OpenVDS::VDSProduceStatus::Unavailable)
+                            selectedLODCount++;
+                    }
+                    break;
+                }
             }
         }
+
+        // Store for status display
+        m_lastDimGroupName = selectedGroupName;
+        m_lastLODCount = selectedLODCount;
 
         // Calculate target LOD based on display size (what we eventually want)
         int targetLOD = SelectOptimalLOD(accessManager, m_layout, dimGroup,
                                          dim0Size, dim1Size, maxSize);
 
+        // If user has specified a target LOD, use that instead (clamped to available range)
+        if (m_userTargetLOD >= 0)
+        {
+            targetLOD = std::min(m_userTargetLOD, lodCount - 1);
+        }
+
         // Get max available LOD for this specific dimension group
         // (highest number = lowest quality = fastest)
         // Must check availability per-dimGroup as different groups may have different LODs
-        int lodCount = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels());
         int maxLOD = 0;
         for (int lod = lodCount - 1; lod >= 0; lod--)
         {
@@ -1031,7 +1279,11 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
             m_isRefining = false;
             m_lastSliceIndex = sliceIndex;
             m_lastDimension = sliceOnDimension;
+            selectedLOD = targetLOD;
         }
+
+        // Store selected LOD for status display
+        m_lastSelectedLOD = selectedLOD;
 
         // Start timing
         auto renderStartTime = std::chrono::high_resolution_clock::now();

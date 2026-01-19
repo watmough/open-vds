@@ -80,6 +80,8 @@ if(WIN32)
   # VDS Viewer - Standalone VDS viewer application
   add_executable(VdsViewer WIN32
     VdsViewer.cpp
+    VdsRenderer.cpp
+    VdsRenderer.h
   )
 
   target_link_libraries(VdsViewer
