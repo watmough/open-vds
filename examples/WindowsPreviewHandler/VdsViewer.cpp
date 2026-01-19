@@ -1028,14 +1028,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             HDC hdcBitmap = CreateCompatibleDC(hdc);
             HBITMAP hbmOldBitmap = (HBITMAP)SelectObject(hdcBitmap, g_app.hBitmap);
 
-            // Determine if controls will be vertical (on left side) for layout adjustment
-            bool controlsOnLeft = (topPaneHeight <= g_app.windowWidth);
-            // Estimate control area width when on left: inset + typical max width + padding
-            int controlAreaWidth = controlsOnLeft ? 220 : 0;  // ~40 inset + ~150 text + ~30 padding
-
             // Calculate centered position with aspect ratio preservation
-            // When controls are on left, center in remaining space
-            int availableWidth = g_app.windowWidth - controlAreaWidth;
+            int availableWidth = g_app.windowWidth;
             int availableHeight = topPaneHeight;
 
             float scaleX = (float)availableWidth / g_app.bitmapWidth;
@@ -1044,8 +1038,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             displayWidth = (int)(g_app.bitmapWidth * scale);
             displayHeight = (int)(g_app.bitmapHeight * scale);
-            // Offset by control area to center in remaining space
-            bitmapX = controlAreaWidth + (availableWidth - displayWidth) / 2;
+            bitmapX = (availableWidth - displayWidth) / 2;
             bitmapY = (topPaneHeight - displayHeight) / 2;
 
             // High-quality scaling
