@@ -539,16 +539,12 @@ static void DrawTextArea(HDC hdc, HFONT hFont, const RECT& rect, const wchar_t* 
     SelectObject(hdc, hOldFont);
 }
 
-// Get current show dimension text
+// Get current show dimension text - uses actual dimension name from VDS
 static const wchar_t* GetShowText()
 {
-    switch (g_app.currentDimension)
-    {
-        case 2: return L"Inline";
-        case 1: return L"Xline";
-        case 0: return L"Z-slice";
-        default: return L"Inline";
-    }
+    if (g_app.renderer)
+        return g_app.renderer->GetDimensionName(g_app.currentDimension);
+    return L"--";
 }
 
 // Get current quality mode text
@@ -787,14 +783,17 @@ static bool HandleUIClick(int x, int y)
 
     POINT pt = { x, y };
 
-    // Check Show text area - cycle through dimensions
+    // Check Show text area - cycle through dimensions (only for 3D+ data)
     if (PtInRect(&g_app.uiShowRegion, pt))
     {
         int dimensionality = g_app.renderer->GetDimensionality();
+        // Only allow dimension cycling for 3D data
+        if (dimensionality < 3)
+            return true;  // Consume click but don't change anything
+
         // Cycle: 2 -> 1 -> 0 -> 2 (Inline -> Xline -> Z-slice -> Inline)
         int newDim = g_app.currentDimension - 1;
         if (newDim < 0) newDim = dimensionality - 1;
-        if (newDim < 0) newDim = 0;
 
         // Re-enable LOD refinement and reset to auto LOD for normal navigation
         g_app.lodRefinementEnabled = true;
@@ -865,10 +864,14 @@ static bool HandleUIScroll(int x, int y, int delta)
 
     POINT pt = { x, y };
 
-    // Scroll on Show region changes dimension
+    // Scroll on Show region changes dimension (only for 3D+ data)
     if (PtInRect(&g_app.uiShowRegion, pt))
     {
         int dimensionality = g_app.renderer->GetDimensionality();
+        // Only allow dimension cycling for 3D data
+        if (dimensionality < 3)
+            return true;  // Consume scroll but don't change anything
+
         int newDim = g_app.currentDimension + ((delta > 0) ? 1 : -1);
         // Wrap around
         if (newDim < 0) newDim = dimensionality - 1;
@@ -1619,8 +1622,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"VdsViewerClass";
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-    wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
+    // Load application icon from embedded resource (IDI_ICON1 = 1)
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+    wc.hIconSm = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+    // Fallback to default if resource not found
+    if (!wc.hIcon) wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    if (!wc.hIconSm) wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
 
     if (!RegisterClassExW(&wc))
     {
