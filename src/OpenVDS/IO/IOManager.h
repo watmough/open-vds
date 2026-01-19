@@ -22,9 +22,12 @@
 
 #include <memory>
 #include <functional>
+#include <json_cpp_include.h>
 
 namespace OpenVDS
 {
+  bool ParseJSONFromBuffer(const std::vector<unsigned char>& json, Json::Value& root, Error& error);
+
   class Request;
   class TransferDownloadHandler
   {

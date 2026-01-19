@@ -36,6 +36,10 @@
 #include <vector>
 #include <tuple>
 
+#ifdef _WIN32
+struct IStream;  // Forward declaration for Windows COM IStream
+#endif
+
 namespace OpenVDS
 {
 class VolumeDataLayoutDescriptor;
@@ -89,6 +93,9 @@ struct OpenOptions
     Http,
     VDSFile,
     InMemory,
+#ifdef _WIN32
+    IStream,
+#endif
     Other,
     ConnectionTypeCount
   };
@@ -587,6 +594,30 @@ struct VDSFileOpenOptions : OpenOptions
   /// </param>
   VDSFileOpenOptions(const std::string &fileName) : OpenOptions(VDSFile), fileName(fileName) {}
 };
+
+#ifdef _WIN32
+/// <summary>
+/// Options for opening a VDS from a Windows IStream (read-only)
+/// </summary>
+/// <remarks>
+/// The IStream is borrowed - the caller retains ownership and must ensure
+/// the IStream remains valid for the lifetime of the VDS handle.
+/// </remarks>
+struct IStreamOpenOptions : OpenOptions
+{
+  ::IStream* pStream;  ///< Borrowed IStream pointer - caller owns lifetime
+
+  IStreamOpenOptions() : OpenOptions(IStream), pStream(nullptr) {}
+
+  /// <summary>
+  /// IStreamOpenOptions constructor
+  /// </summary>
+  /// <param name="pStream">
+  /// Pointer to a Windows IStream. The caller retains ownership.
+  /// </param>
+  IStreamOpenOptions(::IStream* pStream) : OpenOptions(IStream), pStream(pStream) {}
+};
+#endif
 
 /// <summary>
 /// Create an OpenOptions struct from a url and connection string

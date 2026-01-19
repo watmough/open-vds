@@ -23,6 +23,7 @@
 
 #include <io.h>
 #include <windows.h>
+#include <objidl.h>  // For IStream interface
 #include <fmt/format.h>
 
 #include <sys/stat.h>
@@ -269,9 +270,42 @@ bool File::Open(const std::string& filename, bool isCreate, bool isDestroyExisti
   return true;
 }
 
+bool File::OpenFromIStream(::IStream* pStream, Error& error)
+{
+  assert(!IsOpen());
+  assert(pStream != nullptr);
+
+  _pIStream = pStream;
+  _pxPlatformHandleRead = nullptr;
+  _pxPlatformHandleReadWrite = nullptr;
+  _cFileName = "<IStream>";
+
+  // Verify stream is readable by getting size
+  STATSTG stat;
+  HRESULT hr = pStream->Stat(&stat, STATFLAG_NONAME);
+  if (FAILED(hr))
+  {
+    error.code = hr;
+    error.string = "IStream::Stat failed";
+    _pIStream = nullptr;
+    _cFileName.clear();
+    return false;
+  }
+
+  return true;
+}
+
 void File::Close()
 {
   assert(IsOpen());
+
+  // Handle IStream mode - just clear the pointer (borrowed, not owned)
+  if (_pIStream)
+  {
+    _pIStream = nullptr;
+    _cFileName.clear();
+    return;
+  }
 
   if (m_pFileMappingObject)
   {
@@ -328,6 +362,21 @@ bool File::EnableWriting(Error& error)
 
 int64_t File::Size(Error& error) const
 {
+  // Handle IStream mode
+  if (_pIStream)
+  {
+    std::lock_guard<std::mutex> lock(_iStreamMutex);
+    STATSTG stat;
+    HRESULT hr = _pIStream->Stat(&stat, STATFLAG_NONAME);
+    if (FAILED(hr))
+    {
+      error.code = hr;
+      error.string = "IStream::Stat failed";
+      return -1;
+    }
+    return static_cast<int64_t>(stat.cbSize.QuadPart);
+  }
+
   LARGE_INTEGER
     li;
 
@@ -363,6 +412,33 @@ std::string File::LastWriteTime(Error& error) const
 bool File::Read(void* pxData, int64_t nOffset, int32_t nLength, Error& error) const
 {
   assert(nOffset >= 0);
+
+  // Handle IStream mode
+  if (_pIStream)
+  {
+    // Lock mutex to protect IStream access (IStream is not thread-safe)
+    std::lock_guard<std::mutex> lock(_iStreamMutex);
+
+    LARGE_INTEGER seekPos;
+    seekPos.QuadPart = nOffset;
+    HRESULT hr = _pIStream->Seek(seekPos, STREAM_SEEK_SET, nullptr);
+    if (FAILED(hr))
+    {
+      error.code = hr;
+      error.string = "IStream::Seek failed";
+      return false;
+    }
+
+    ULONG bytesRead = 0;
+    hr = _pIStream->Read(pxData, static_cast<ULONG>(nLength), &bytesRead);
+    if (FAILED(hr) || bytesRead != static_cast<ULONG>(nLength))
+    {
+      error.code = FAILED(hr) ? hr : E_FAIL;
+      error.string = FAILED(hr) ? "IStream::Read failed" : "IStream::Read incomplete";
+      return false;
+    }
+    return true;
+  }
 
   OVERLAPPED ol;
   memset(&ol, 0, sizeof(ol));

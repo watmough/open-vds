@@ -1,0 +1,22 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+; OpenVDS Shell Extension Unregistration
+; ============================================================================
+; This script removes the VDS preview and thumbnail handlers from the registry
+; ============================================================================
+
+; === Remove File Association ===
+[-HKEY_CLASSES_ROOT\.vds]
+[-HKEY_CLASSES_ROOT\OpenVDS.Document]
+
+; === Remove Thumbnail Handler ===
+[-HKEY_CLASSES_ROOT\CLSID\{8F7B3D50-5C4E-4A1F-9E5D-6B2A7F8C4D91}]
+
+; === Remove Preview Handler ===
+[-HKEY_CLASSES_ROOT\CLSID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}]
+[-HKEY_CLASSES_ROOT\AppID\{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}]
+
+; Remove from preview handlers list
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\PreviewHandlers]
+"{9A2E5F61-7D3B-4C2F-A8E6-1C4B8E9D5F72}"=-

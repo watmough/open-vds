@@ -27,6 +27,12 @@
 #include <vector>
 #include <cstdlib>
 
+#ifndef OPENVDS_SINGLE_THREADED
+
+// ============================================================================
+// MULTI-THREADED IMPLEMENTATION (default)
+// ============================================================================
+
 class ThreadPool
 {
 public:
@@ -142,3 +148,161 @@ inline int ThreadPool::ConfigureThreadCount(const char *envVariableName, int def
   }
   return defaultValue;
 }
+
+#else // OPENVDS_SINGLE_THREADED
+
+// ============================================================================
+// SINGLE-THREADED IMPLEMENTATION
+// ============================================================================
+// This synchronous stub executes all tasks immediately on the calling thread.
+// Used for Windows Shell Extension (preview/thumbnail handlers) where OpenVDS
+// runs in prevhost.exe with a COM-marshaled IStream. Worker threads cannot
+// access the IStream without marshaling back to the main thread's COM apartment,
+// causing deadlock when the main thread is blocked waiting for completion.
+// By executing synchronously, all IStream calls happen on the main thread.
+// ============================================================================
+
+class ThreadPool
+{
+public:
+  ThreadPool(size_t) {}
+  ~ThreadPool() {}
+
+  template <class F>
+  auto Enqueue(F&& f) -> std::future<typename std::result_of<F()>::type>
+  {
+    using return_type = typename std::result_of<F()>::type;
+
+    // Create packaged_task to get a future
+    auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
+    std::future<return_type> res = task->get_future();
+
+    // Execute immediately on calling thread (synchronous)
+    (*task)();
+
+    return res;
+  }
+
+  size_t ThreadCount() const { return 1; }
+
+  static int ConfigureThreadCount(const char* /*envVariableName*/, int /*defaultValue*/ = 1)
+  {
+    // Always return 1 in single-threaded mode
+    return 1;
+  }
+};
+
+#endif // OPENVDS_SINGLE_THREADED
+
+// ============================================================================
+// ASYNC THREAD POOL (always multi-threaded)
+// ============================================================================
+// This thread pool is always multi-threaded regardless of OPENVDS_SINGLE_THREADED.
+// Used for CPU-bound work (like decompression) that doesn't require I/O access.
+// In OPENVDS_SINGLE_THREADED mode, I/O happens on main thread, but decompression
+// can safely run in parallel on worker threads.
+// ============================================================================
+
+class AsyncThreadPool
+{
+public:
+  AsyncThreadPool(size_t threads)
+    : stop(false)
+  {
+    for (size_t i = 0; i < threads; ++i)
+      workers.emplace_back(
+        [this]
+        {
+          for (;;)
+          {
+            std::function<void()> task;
+
+            {
+              std::unique_lock<std::mutex> lock(this->queue_mutex);
+              this->condition.wait(lock,
+                [this]
+                {
+                  return this->stop || !this->tasks.empty();
+                });
+              if (this->stop && this->tasks.empty())
+                return;
+              task = std::move(this->tasks.front());
+              this->tasks.pop();
+            }
+
+            task();
+          }
+        });
+  }
+
+  ~AsyncThreadPool()
+  {
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex);
+      stop = true;
+    }
+    condition.notify_all();
+    for (std::thread& worker : workers)
+      worker.join();
+  }
+
+  template <class F>
+  auto Enqueue(F&& f) -> std::future<typename std::result_of<F()>::type>
+  {
+    using return_type = typename std::result_of<F()>::type;
+
+    auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
+
+    std::future<return_type> res = task->get_future();
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex);
+
+      if (stop)
+      {
+        fprintf(stderr, "enqueue on stopped AsyncThreadPool");
+        abort();
+      }
+
+      tasks.emplace([task]()
+        {
+          (*task)();
+        });
+    }
+    condition.notify_one();
+    return res;
+  }
+
+  size_t ThreadCount() const { return workers.size(); }
+
+  static int ConfigureThreadCount(const char *envVariableName, int defaultValue = std::thread::hardware_concurrency())
+  {
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable:4996)
+#endif
+    if (const char *envVariable = std::getenv(envVariableName))
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+    {
+      try
+      {
+        int threadCount = std::stoi(std::string(envVariable));
+        if (threadCount > 0)
+          return threadCount;
+      }
+      catch (...)
+      {
+      }
+    }
+    return defaultValue;
+  }
+
+private:
+  std::vector<std::thread> workers;
+  std::queue<std::function<void()>> tasks;
+
+  std::mutex queue_mutex;
+  std::condition_variable condition;
+  bool stop;
+};

@@ -50,6 +50,9 @@ File::File()
   : _pxPlatformHandleRead(nullptr)
   , _pxPlatformHandleReadWrite(nullptr)
   , m_pFileMappingObject(nullptr)
+#ifdef _WIN32
+  , _pIStream(nullptr)
+#endif
 {
 }
 
@@ -68,6 +71,10 @@ bool File::IsWriteable() const
 
 bool File::IsOpen() const
 {
+#ifdef _WIN32
+  if (_pIStream != nullptr)
+    return true;
+#endif
   return _pxPlatformHandleRead != nullptr;
 }
 

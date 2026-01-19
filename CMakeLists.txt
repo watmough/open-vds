@@ -55,7 +55,7 @@ if (EXISTS /etc/alpine-release) #the Alpine folks desided to patch cmake but for
 endif()
 
 if (NOT EMSCRIPTEN)
-  set(BUILD_PYTHON_DEFAULT ON)
+  set(BUILD_PYTHON_DEFAULT OFF)
   if (Python_ROOT_DIR)
     set(PYTHON_REQUIRED "REQUIRED")
   endif()
@@ -134,16 +134,16 @@ else()
   option(ENABLE_MSVC_TOOLSET_DIR "Enable adding a subdir for the MSVC toolset" ON)
   option(BUILD_SHARED_LIBS "Build OpenVDS as a shared library" ON)
   option(BUILD_EXAMPLES "Build OpenVDS example projects" ON)
-  option(BUILD_TESTS "Build OpenVDS tests" ON)
+  option(BUILD_TESTS "Build OpenVDS tests" OFF)
   option(BUILD_DOCS  "Build OpenVDS docs" OFF)
   option(ENABLE_RUNPATH_ORIGIN "On Linux make the install have ORIGIN as RUNPATH" ON)
-  option(DISABLE_STRICT_WARNINGS "Disable strict warnings settings. This includes making warnings to errors." OFF)
-  option(DISABLE_AWS_IOMANAGER "Disable compiling the Aws-cpp-sdk IOManager backend." OFF)
+  option(DISABLE_STRICT_WARNINGS "Disable strict warnings settings. This includes making warnings to errors." ON)
+  option(DISABLE_AWS_IOMANAGER "Disable compiling the Aws-cpp-sdk IOManager backend." ON)
   option(DISABLE_AZURE_IOMANAGER "Disable compiling Azure-storage-cpp and cpprestapi. This also disables Azure support for DMS." ON)
-  option(DISABLE_AZURESDKFORCPP_IOMANAGER "Disable compiling AzureSdkForCpp. This also disables Azure support for DMS." OFF)
-  option(DISABLE_AZURE_PRESIGNED_IOMANAGER "Disable compiling Azure presigned IOManager backend." OFF)
-  option(DISABLE_GCP_IOMANAGER "Disable compiling GCP IOManager backend." OFF)
-  option(DISABLE_DMS_IOMANAGER "Disable compiling DMS IOManager backend." OFF)
+  option(DISABLE_AZURESDKFORCPP_IOMANAGER "Disable compiling AzureSdkForCpp. This also disables Azure support for DMS." ON)
+  option(DISABLE_AZURE_PRESIGNED_IOMANAGER "Disable compiling Azure presigned IOManager backend." ON)
+  option(DISABLE_GCP_IOMANAGER "Disable compiling GCP IOManager backend." ON)
+  option(DISABLE_DMS_IOMANAGER "Disable compiling DMS IOManager backend." ON)
   option(BUILD_ZLIB   "Build zlib" ON)
   option(BUILD_CURL   "Build libcurl as part of the openVDS build" ON)
   option(BUILD_UV     "Build libuv as part of the openVDS build" ON)
@@ -154,14 +154,18 @@ else()
   option(ENABLE_ASAN "Build this OpenVDS with AddressSanitizer" OFF)
   option(DISABLE_LTO "Disable LTO for release builds" OFF)
   option(ENABLE_GEN_PYTEST_INI "Enable generating pytest.ini file in project root" ON)
+  option(OPENVDS_SINGLE_THREADED "Disable threading for COM/IStream compatibility (Windows shell extensions)" OFF)
 
 
   include(CMakeDependentOption)
 
-  cmake_dependent_option(
-      DISABLE_CURL_IOMANAGER "Disable CURL backend and CURL-based HTTP IOManager."
-      ON "DISABLE_AWS_IOMANAGER;DISABLE_AZURE_PRESIGNED_IOMANAGER;DISABLE_GCP_IOMANAGER;DISABLE_DMS_IOMANAGER" OFF)
-  mark_as_advanced(DISABLE_CURL_IOMANAGER)
+  # cmake_dependent_option(
+  #     DISABLE_CURL_IOMANAGER 
+  #     "Disable CURL backend and CURL-based HTTP IOManager."
+  #     ON 	# Disable CURL, only if the following is true
+  #     "DISABLE_AWS_IOMANAGER;AND;DISABLE_AZURE_PRESIGNED_IOMANAGER;AND;DISABLE_GCP_IOMANAGER;AND;DISABLE_DMS_IOMANAGER"
+  #     OFF)	# Otherwise set Disable Curl option to OFF
+  # mark_as_advanced(DISABLE_CURL_IOMANAGER)
 
   if ((${CMAKE_MAJOR_VERSION} EQUAL 3) AND (${CMAKE_MINOR_VERSION} EQUAL 19) AND (${CMAKE_PATCH_VERSION} LESS 3 OR ${CMAKE_PATCH_VERSION} EQUAL 20122902) AND (NOT ${DISABLE_AWS_IOMANAGER}))
     message(FATAL_ERROR "A bug in CMake 3.19 series makes it is makes it not possible to build the AWS backend code.\n Please upgrade og downgrade. Its possible to use custom version of cmake in Visual Studio under CMake Settings.\n Disable AWS IO Manager by defining -DDISABLE_AWS_IOMANAGER=ON as a cmake parameter")

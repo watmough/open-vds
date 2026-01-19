@@ -1153,7 +1153,29 @@ VDS *OpenVDSInterfaceImpl::Open(const OpenOptions &options, Error &error)
   std::unique_ptr<VDS> ret(new VDS(options.requestThreadCount, options.logLevel));
   std::unique_ptr<VolumeDataStore> volumeDataStore;
 
-  if(options.connectionType != OpenOptions::VDSFile)
+  if (options.connectionType == OpenOptions::VDSFile)
+  {
+    const VDSFileOpenOptions &fileOptions = static_cast<const VDSFileOpenOptions &>(options);
+    volumeDataStore.reset(new VolumeDataStoreVDSFile(*ret, fileOptions.fileName, VolumeDataStoreVDSFile::ReadOnly, error));
+    if (error.code)
+      return nullptr;
+  }
+#ifdef _WIN32
+  else if (options.connectionType == OpenOptions::IStream)
+  {
+    const IStreamOpenOptions &streamOptions = static_cast<const IStreamOpenOptions &>(options);
+    if (!streamOptions.pStream)
+    {
+      error.code = -1;
+      error.string = "IStreamOpenOptions::pStream is null";
+      return nullptr;
+    }
+    volumeDataStore.reset(new VolumeDataStoreVDSFile(*ret, streamOptions.pStream, error));
+    if (error.code)
+      return nullptr;
+  }
+#endif
+  else
   {
     std::unique_ptr<IOManager> ioManager(IOManager::CreateIOManager(options, IOManager::AccessPattern::ReadOnly, error));
     if (error.code)
@@ -1163,13 +1185,6 @@ VDS *OpenVDSInterfaceImpl::Open(const OpenOptions &options, Error &error)
       ioManager.reset(iomanagerTransformer(ioManager.release()));
 
     volumeDataStore.reset(new VolumeDataStoreIOManager(*ret, ioManager.release(), IOManager::ReadOnly));
-  }
-  else
-  {
-    const VDSFileOpenOptions &fileOptions = static_cast<const VDSFileOpenOptions &>(options);
-    volumeDataStore.reset(new VolumeDataStoreVDSFile(*ret, fileOptions.fileName, VolumeDataStoreVDSFile::ReadOnly, error));
-    if (error.code)
-      return nullptr;
   }
 
   if(Init(ret.get(), volumeDataStore.release(), error))

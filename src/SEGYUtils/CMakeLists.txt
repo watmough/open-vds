@@ -25,10 +25,12 @@ set_target_properties(segyutils
 )
 endif()
 
+get_target_property(json_cpp_include_dir jsoncpp_lib_static INTERFACE_INCLUDE_DIRECTORIES)
 target_include_directories(segyutils
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>
+        ${json_cpp_include_dir}
 )
 
 install(TARGETS segyutils 

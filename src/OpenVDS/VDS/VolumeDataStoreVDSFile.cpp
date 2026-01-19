@@ -677,6 +677,63 @@ VolumeDataStoreVDSFile::VolumeDataStoreVDSFile(VDS &vds, const std::string &vdsF
   }
 }
 
+#ifdef _WIN32
+VolumeDataStoreVDSFile::VolumeDataStoreVDSFile(VDS &vds, ::IStream* pStream, Error &error)
+  : VolumeDataStore(OpenOptions::IStream, vds.logger)
+  , m_vds(vds)
+  , m_isVDSObjectFilePresent(false)
+  , m_isVolumeDataLayoutFilePresent(false)
+  , m_dataStore(nullptr, &HueBulkDataStore::Close)
+{
+  m_dataStore.reset(HueBulkDataStore::OpenFromIStream(pStream));
+
+  if (m_dataStore && m_dataStore->IsOpen())
+  {
+    int fileCount = m_dataStore->GetFileCount();
+    for (int fileIndex = 0; fileIndex < fileCount; fileIndex++)
+    {
+      std::string fileName(m_dataStore->GetFileName(fileIndex));
+      int fileType = m_dataStore->GetFileType(fileIndex);
+
+      if (fileType == FILETYPE_VDS_LAYER)
+      {
+        HueBulkDataStore::FileInterface *fileInterface = m_dataStore->OpenFile(m_dataStore->GetFileName(fileIndex));
+
+        if (!fileInterface)
+        {
+          error.string = m_dataStore->GetErrorMessage();
+          error.code = -1;
+          Error closeError;
+          Close(closeError);
+          break;
+        }
+
+        bool layerChunksWaveletAdaptive = (fileInterface->GetFileMetadataLength() == sizeof(VDSLayerMetadataWaveletAdaptive) &&
+                                           fileInterface->GetChunkMetadataLength() == sizeof(VDSWaveletAdaptiveLevelsChunkMetadata));
+
+        VDSLayerMetadataWaveletAdaptive layerMetadata = VDSLayerMetadataWaveletAdaptive();
+        fileInterface->ReadFileMetadata(&layerMetadata);
+
+        m_layerFiles[fileName] = LayerFile(fileInterface, layerMetadata, layerChunksWaveletAdaptive, false);
+      }
+      else if (fileType == FILETYPE_HUE_OBJECT)
+      {
+        m_isVDSObjectFilePresent = (fileName == "VDSObject");
+      }
+      else if (fileType == FILETYPE_JSON_OBJECT)
+      {
+        m_isVolumeDataLayoutFilePresent = (fileName == "VolumeDataLayout");
+      }
+    }
+  }
+  else
+  {
+    error.string = m_dataStore ? m_dataStore->GetErrorMessage() : "Failed to open IStream";
+    error.code = -1;
+  }
+}
+#endif
+
 VolumeDataStoreVDSFile::~VolumeDataStoreVDSFile()
 {
 }

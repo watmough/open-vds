@@ -9,8 +9,6 @@
 
 namespace OpenVDS
 {
-bool ParseJSONFromBuffer(const std::vector<unsigned char>& json, Json::Value& root, Error& error);
-
 struct DmsManager
 {
   DmsManager(const std::string& authorityUrl, const std::string& appKey, CurlHandler& curlHandler, Logger& logger);

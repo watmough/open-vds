@@ -44,28 +44,6 @@ static std::vector<std::string> split(const std::string& text, char sep)
   return tokens;
 }
 
-bool ParseJSONFromBuffer(const std::vector<unsigned char> &json, Json::Value &root, Error &error)
-{
-  try
-  {
-    Json::CharReaderBuilder rbuilder;
-    rbuilder["collectComments"] = false;
-
-    std::unique_ptr<Json::CharReader> reader(rbuilder.newCharReader());
-    const char *json_begin = reinterpret_cast<const char *>(json.data());
-    reader->parse(json_begin, json_begin + json.size(), &root, &error.string);
-
-    return true;
-  }
-  catch(Json::Exception &e)
-  {
-    error.code = -1;
-    error.string = e.what() + std::string(" : ") + error.string;
-  }
-
-  return false;
-}
-
 DmsManager::DmsManager(const std::string& authorityUrl, const std::string& appKey, CurlHandler &curlHandler, Logger& logger)
   : m_authorityUrl(authorityUrl.empty() ? getStringEnvironmentVariable("SD_SVC_URL") : authorityUrl)
   , m_appKey(appKey.empty() ? getStringEnvironmentVariable("SD_SVC_API_KEY") : appKey)

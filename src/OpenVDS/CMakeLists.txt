@@ -216,6 +216,10 @@ if (BUILD_OPENSSL)
 endif()
 target_compile_definitions(openvds_objects PRIVATE openvds_EXPORTS)
 
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(openvds_objects PUBLIC OPENVDS_SINGLE_THREADED)
+endif()
+
 if (NOT WIN32 AND AUTODETECT_CA_CERTIFICATES)
   target_compile_definitions(openvds_objects PRIVATE AUTODETECT_CA_CERTIFICATES)
 endif()
@@ -385,6 +389,11 @@ endif()
 
 target_link_libraries(openvds PRIVATE openvds_objects)
 
+# Propagate single-threaded mode to consumers (for ThreadPool.h)
+if (OPENVDS_SINGLE_THREADED)
+  target_compile_definitions(openvds PUBLIC OPENVDS_SINGLE_THREADED)
+endif()
+
 setCommonTargetProperties(openvds_objects)
 setCommonTargetProperties(openvds)
 setExportedHeadersForTarget(openvds ${EXPORTED_HEADER_FILES})
@@ -404,7 +413,9 @@ target_include_directories(openvds
         $<INSTALL_INTERFACE:include>
 )
 
-install(TARGETS openvds
+# static lib, need to explicitly export everything, or use public linkage ???
+
+install(TARGETS openvds openvds_objects hue_bds_objects
   EXPORT openvds-export
   ARCHIVE
     DESTINATION ${CMAKE_INSTALL_LIBDIR}${LIB_TOOLSET_DIR}
@@ -428,7 +439,7 @@ install(
 
 export(
     TARGETS
-        openvds
+        openvds openvds_objects hue_bds_objects
     NAMESPACE
         openvds::
     FILE
