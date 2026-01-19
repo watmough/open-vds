@@ -32,6 +32,7 @@
 #include <vector>
 
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "msimg32.lib")  // For AlphaBlend
 
 // ============================================================================
 // GUIDs
@@ -604,44 +605,58 @@ public:
             OnPaint();
             return 0;
 
+        case WM_LBUTTONDOWN:
+        {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+
+            if (HandleUIClick(x, y))
+            {
+                InvalidateRect(m_hwndPreview, nullptr, FALSE);
+                return 0;
+            }
+            break;
+        }
+
         case WM_MOUSEWHEEL:
         {
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
 
-            // Get mouse position to determine which half
+            // Get mouse position in client coordinates
             POINT pt;
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
             ScreenToClient(hwnd, &pt);
 
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int midX = (rc.right - rc.left) / 2;
-
-            if (pt.x > midX && m_renderer)
+            // Check UI controls first
+            if (HandleUIScroll(pt.x, pt.y, delta))
             {
-                // Right side: scroll through slices
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            // Default: scroll through slices
+            if (m_renderer)
+            {
                 // Scroll by 10 slices normally, 1 slice with SHIFT held
-                int scrollAmount = (GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 10;
+                int step = (delta > 0) ? -10 : 10;
+                if (GetKeyState(VK_SHIFT) & 0x8000)
+                    step = (delta > 0) ? -1 : 1;
+
                 int maxSlice = m_renderer->GetSliceCount(m_dimension) - 1;
-                int newSlice = m_sliceIndex - delta * scrollAmount;
+                int newSlice = m_sliceIndex + step;
                 newSlice = std::max(0, std::min(maxSlice, newSlice));
 
-                // Cancel any pending refinement timer and in-progress render when slice changes
                 if (newSlice != m_sliceIndex)
                 {
+                    // Cancel any pending refinement timer and in-progress render
                     KillTimer(hwnd, 1);
-                    m_renderer->RequestCancel();  // Signal render to stop if in progress
+                    m_renderer->RequestCancel();
+                    // Re-enable LOD refinement for normal navigation
+                    m_lodRefinementEnabled = true;
+                    m_sliceIndex = newSlice;
+                    m_cachedSliceIndex = -1;  // Force re-render
                 }
-                m_sliceIndex = newSlice;
-            }
-            else
-            {
-                // Left side: scroll through debug messages
-                g_debugScrollOffset -= delta;
-                if (g_debugScrollOffset < 0) g_debugScrollOffset = 0;
-                if (g_debugScrollOffset >= (int)g_debugMessages.size())
-                    g_debugScrollOffset = (int)g_debugMessages.size() - 1;
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -671,10 +686,24 @@ public:
                 m_cachedSliceIndex = -1;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+            else if (wParam == UI_DEBOUNCE_TIMER_ID)
+            {
+                KillTimer(hwnd, UI_DEBOUNCE_TIMER_ID);
+                m_showOverlay = false;
+                m_overlayText.clear();
+
+                if (m_uiPendingReopen)
+                {
+                    m_uiPendingReopen = false;
+                    ReinitializeWithNewSettings();
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             return 0;
 
         case WM_DESTROY:
             KillTimer(hwnd, 1);  // Cancel any pending refinement timer
+            KillTimer(hwnd, UI_DEBOUNCE_TIMER_ID);  // Cancel any pending debounce timer
             if (m_cachedBitmap)
             {
                 DeleteObject(m_cachedBitmap);
@@ -703,6 +732,495 @@ private:
     std::unique_ptr<VdsRenderer> m_renderer;
     std::wstring m_lastError;  // For diagnostic display
     bool m_isRendering = false;  // Re-entrancy guard for COM message pumping
+
+    // UI control state (VdsViewer-style)
+    int m_targetLOD = 0;
+    int m_maxAvailableLOD = 0;
+    bool m_lodRefinementEnabled = true;
+    OpenVDS::WaveletAdaptiveMode m_waveletAdaptiveMode = OpenVDS::WaveletAdaptiveMode::BestQuality;
+    float m_waveletAdaptiveTolerance = 0.1f;
+    float m_waveletAdaptiveRatio = 10.0f;
+
+    // UI control regions (computed during paint)
+    RECT m_uiShowRegion = {};
+    RECT m_uiQualityRegion = {};
+    RECT m_uiLodRegion = {};
+    bool m_uiIsVertical = false;
+
+    // Debounce timer for quality changes
+    static constexpr UINT_PTR UI_DEBOUNCE_TIMER_ID = 2;
+    static constexpr UINT UI_DEBOUNCE_DELAY_MS = 200;
+    bool m_uiPendingReopen = false;
+    std::wstring m_overlayText;
+    bool m_showOverlay = false;
+
+    // Get current show dimension text
+    const wchar_t* GetShowText() const
+    {
+        switch (m_dimension)
+        {
+            case 2: return L"Inline";
+            case 1: return L"Xline";
+            case 0: return L"Z-slice";
+            default: return L"Inline";
+        }
+    }
+
+    // Get current quality mode text
+    std::wstring GetQualityText() const
+    {
+        wchar_t buf[32];
+        switch (m_waveletAdaptiveMode)
+        {
+            case OpenVDS::WaveletAdaptiveMode::BestQuality:
+                return L"Best";
+            case OpenVDS::WaveletAdaptiveMode::Tolerance:
+                swprintf_s(buf, L"Tol %.2f", m_waveletAdaptiveTolerance);
+                return buf;
+            case OpenVDS::WaveletAdaptiveMode::Ratio:
+                swprintf_s(buf, L"Ratio %.0f", m_waveletAdaptiveRatio);
+                return buf;
+            default:
+                return L"Best";
+        }
+    }
+
+    // Get current LOD text
+    std::wstring GetLodText() const
+    {
+        wchar_t buf[16];
+        swprintf_s(buf, L"LOD %d", m_targetLOD);
+        return buf;
+    }
+
+    // Measure text width with given font
+    static int MeasureTextWidth(HDC hdc, HFONT hFont, const wchar_t* text)
+    {
+        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+        SIZE sz;
+        GetTextExtentPoint32W(hdc, text, (int)wcslen(text), &sz);
+        SelectObject(hdc, hOldFont);
+        return sz.cx;
+    }
+
+    // Draw a simple text area with no background, white text with shadow
+    static void DrawTextArea(HDC hdc, HFONT hFont, const RECT& rect, const wchar_t* text)
+    {
+        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+        SetBkMode(hdc, TRANSPARENT);
+
+        // Draw shadow
+        RECT shadowRect = rect;
+        OffsetRect(&shadowRect, 2, 2);
+        ::SetTextColor(hdc, RGB(0, 0, 0));
+        DrawTextW(hdc, text, -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        // Draw text in white
+        ::SetTextColor(hdc, RGB(255, 255, 255));
+        DrawTextW(hdc, text, -1, (LPRECT)&rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        SelectObject(hdc, hOldFont);
+    }
+
+    // Draw UI controls - simple text areas showing current selection
+    void DrawUIControls(HDC hdc, HDC hdcScreen, int availableWidth, int availableHeight)
+    {
+        if (!m_renderer)
+            return;
+
+        // Create font (24pt = 32 pixels at 96 DPI, bold) - smaller for preview pane
+        HFONT hFont = CreateFontW(-32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+        int textHeight = 40;
+        int labelHeight = 40;
+        int sectionGap = 8;
+        int padding = 14;
+        int bgPadding = 6;
+        int inset = 20;
+
+        m_maxAvailableLOD = m_renderer->GetLastLODCount() - 1;
+        if (m_maxAvailableLOD < 0) m_maxAvailableLOD = 0;
+
+        // Get current text values
+        const wchar_t* showText = GetShowText();
+        std::wstring qualText = GetQualityText();
+        std::wstring lodText = GetLodText();
+
+        // Measure text widths
+        int showWidth = MeasureTextWidth(hdc, hFont, showText) + padding;
+        int qualWidth = MeasureTextWidth(hdc, hFont, qualText.c_str()) + padding;
+        int lodWidth = MeasureTextWidth(hdc, hFont, lodText.c_str()) + padding;
+
+        // Measure label widths
+        int showLabelWidth = MeasureTextWidth(hdc, hFont, L"Show") + 4;
+        int qualLabelWidth = MeasureTextWidth(hdc, hFont, L"Quality") + 4;
+        int lodLabelWidth = MeasureTextWidth(hdc, hFont, L"Target LOD") + 4;
+
+        // Calculate max width for uniform hitboxes
+        int maxControlWidth = std::max({showWidth, qualWidth, lodWidth, showLabelWidth, qualLabelWidth, lodLabelWidth});
+
+        // Determine layout: vertical (left side) if wide, horizontal (bottom) if tall
+        bool vertical = (availableWidth > availableHeight);
+        m_uiIsVertical = vertical;
+
+        // Calculate total bounds for background
+        RECT bgRect;
+        if (vertical)
+        {
+            int totalHeight = 3 * (labelHeight + textHeight) + 2 * sectionGap;
+            int bgY = availableHeight - totalHeight - 8 - bgPadding;
+            bgRect = { inset - bgPadding, bgY, inset + maxControlWidth + bgPadding * 2, availableHeight - 8 + bgPadding };
+        }
+        else
+        {
+            int totalWidth = 3 * maxControlWidth + 2 * sectionGap;
+            int y = availableHeight - labelHeight - textHeight - 8;
+            bgRect = { inset - bgPadding, y - bgPadding, inset + totalWidth + bgPadding, availableHeight - 8 + bgPadding };
+        }
+
+        // Draw semi-transparent background
+        {
+            int bgWidth = bgRect.right - bgRect.left;
+            int bgHeight = bgRect.bottom - bgRect.top;
+
+            HDC hdcAlpha = CreateCompatibleDC(hdcScreen);
+            HBITMAP hbmAlpha = CreateCompatibleBitmap(hdcScreen, bgWidth, bgHeight);
+            HBITMAP hbmOldAlpha = (HBITMAP)SelectObject(hdcAlpha, hbmAlpha);
+
+            RECT fillRect = { 0, 0, bgWidth, bgHeight };
+            HBRUSH hBlackBrush = CreateSolidBrush(RGB(0, 0, 0));
+            FillRect(hdcAlpha, &fillRect, hBlackBrush);
+            DeleteObject(hBlackBrush);
+
+            BLENDFUNCTION bf = {};
+            bf.BlendOp = AC_SRC_OVER;
+            bf.SourceConstantAlpha = 25;  // 10% opacity
+            AlphaBlend(hdc, bgRect.left, bgRect.top, bgWidth, bgHeight,
+                       hdcAlpha, 0, 0, bgWidth, bgHeight, bf);
+
+            SelectObject(hdcAlpha, hbmOldAlpha);
+            DeleteObject(hbmAlpha);
+            DeleteDC(hdcAlpha);
+        }
+
+        if (vertical)
+        {
+            // Vertical layout (left side, bottom-aligned)
+            int curX = inset;
+            int totalHeight = 3 * (labelHeight + textHeight) + 2 * sectionGap;
+            int curY = availableHeight - totalHeight - 8;
+
+            SetBkMode(hdc, TRANSPARENT);
+            HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+            // === Show Section ===
+            RECT labelRect = { curX, curY, curX + maxControlWidth, curY + labelHeight };
+            RECT shadowRect = labelRect;
+            OffsetRect(&shadowRect, 2, 2);
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            DrawTextW(hdc, L"Show", -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, L"Show", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            m_uiShowRegion = { curX, curY, curX + maxControlWidth, curY + labelHeight + textHeight };
+            RECT showRect = { curX, curY + labelHeight, curX + maxControlWidth, curY + labelHeight + textHeight };
+            DrawTextArea(hdc, hFont, showRect, showText);
+            curY += labelHeight + textHeight + sectionGap;
+
+            // === Quality Section ===
+            labelRect = { curX, curY, curX + maxControlWidth, curY + labelHeight };
+            shadowRect = labelRect;
+            OffsetRect(&shadowRect, 2, 2);
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            DrawTextW(hdc, L"Quality", -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, L"Quality", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            m_uiQualityRegion = { curX, curY, curX + maxControlWidth, curY + labelHeight + textHeight };
+            RECT qualRect = { curX, curY + labelHeight, curX + maxControlWidth, curY + labelHeight + textHeight };
+            DrawTextArea(hdc, hFont, qualRect, qualText.c_str());
+            curY += labelHeight + textHeight + sectionGap;
+
+            // === Target LOD Section ===
+            labelRect = { curX, curY, curX + maxControlWidth, curY + labelHeight };
+            shadowRect = labelRect;
+            OffsetRect(&shadowRect, 2, 2);
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            DrawTextW(hdc, L"Target LOD", -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, L"Target LOD", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            m_uiLodRegion = { curX, curY, curX + maxControlWidth, curY + labelHeight + textHeight };
+            RECT lodRect = { curX, curY + labelHeight, curX + maxControlWidth, curY + labelHeight + textHeight };
+            DrawTextArea(hdc, hFont, lodRect, lodText.c_str());
+
+            SelectObject(hdc, hOldFont);
+        }
+        else
+        {
+            // Horizontal layout (bottom)
+            int curX = inset;
+            int labelY = availableHeight - labelHeight - textHeight - 8;
+            int textY = labelY + labelHeight;
+
+            SetBkMode(hdc, TRANSPARENT);
+            HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+            // === Show Section ===
+            RECT labelRect = { curX, labelY, curX + maxControlWidth, labelY + labelHeight };
+            RECT shadowRect = labelRect;
+            OffsetRect(&shadowRect, 2, 2);
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            DrawTextW(hdc, L"Show", -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, L"Show", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            m_uiShowRegion = { curX, labelY, curX + maxControlWidth, textY + textHeight };
+            RECT showRect = { curX, textY, curX + maxControlWidth, textY + textHeight };
+            DrawTextArea(hdc, hFont, showRect, showText);
+            curX += maxControlWidth + sectionGap;
+
+            // === Quality Section ===
+            labelRect = { curX, labelY, curX + maxControlWidth, labelY + labelHeight };
+            shadowRect = labelRect;
+            OffsetRect(&shadowRect, 2, 2);
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            DrawTextW(hdc, L"Quality", -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, L"Quality", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            m_uiQualityRegion = { curX, labelY, curX + maxControlWidth, textY + textHeight };
+            RECT qualRect = { curX, textY, curX + maxControlWidth, textY + textHeight };
+            DrawTextArea(hdc, hFont, qualRect, qualText.c_str());
+            curX += maxControlWidth + sectionGap;
+
+            // === Target LOD Section ===
+            labelRect = { curX, labelY, curX + maxControlWidth, labelY + labelHeight };
+            shadowRect = labelRect;
+            OffsetRect(&shadowRect, 2, 2);
+            ::SetTextColor(hdc, RGB(0, 0, 0));
+            DrawTextW(hdc, L"Target LOD", -1, &shadowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            ::SetTextColor(hdc, RGB(255, 255, 255));
+            DrawTextW(hdc, L"Target LOD", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            m_uiLodRegion = { curX, labelY, curX + maxControlWidth, textY + textHeight };
+            RECT lodRect = { curX, textY, curX + maxControlWidth, textY + textHeight };
+            DrawTextArea(hdc, hFont, lodRect, lodText.c_str());
+
+            SelectObject(hdc, hOldFont);
+        }
+
+        DeleteObject(hFont);
+    }
+
+    // Handle click on UI controls - cycle to next option, returns true if handled
+    bool HandleUIClick(int x, int y)
+    {
+        if (!m_renderer)
+            return false;
+
+        POINT pt = { x, y };
+
+        // Check Show text area - cycle through dimensions
+        if (PtInRect(&m_uiShowRegion, pt))
+        {
+            int dimensionality = m_renderer->GetDimensionality();
+            int newDim = m_dimension - 1;
+            if (newDim < 0) newDim = dimensionality - 1;
+            if (newDim < 0) newDim = 0;
+
+            m_lodRefinementEnabled = true;
+            m_targetLOD = 0;
+            m_renderer->SetUserTargetLOD(-1);  // Auto LOD
+            m_dimension = newDim;
+            int sliceCount = m_renderer->GetSliceCount(m_dimension);
+            m_sliceIndex = sliceCount / 2;
+            m_cachedSliceIndex = -1;  // Force re-render
+            return true;
+        }
+
+        // Check Quality text area - cycle through modes
+        if (PtInRect(&m_uiQualityRegion, pt))
+        {
+            switch (m_waveletAdaptiveMode)
+            {
+                case OpenVDS::WaveletAdaptiveMode::BestQuality:
+                    m_waveletAdaptiveMode = OpenVDS::WaveletAdaptiveMode::Tolerance;
+                    break;
+                case OpenVDS::WaveletAdaptiveMode::Tolerance:
+                    m_waveletAdaptiveMode = OpenVDS::WaveletAdaptiveMode::Ratio;
+                    break;
+                case OpenVDS::WaveletAdaptiveMode::Ratio:
+                    m_waveletAdaptiveMode = OpenVDS::WaveletAdaptiveMode::BestQuality;
+                    break;
+            }
+            m_overlayText = GetQualityText();
+            m_showOverlay = true;
+            m_lodRefinementEnabled = false;
+            m_uiPendingReopen = true;
+            KillTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID);
+            SetTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID, UI_DEBOUNCE_DELAY_MS, nullptr);
+            return true;
+        }
+
+        // Check LOD text area - cycle through LODs
+        if (PtInRect(&m_uiLodRegion, pt))
+        {
+            m_lodRefinementEnabled = false;
+            m_targetLOD = (m_targetLOD + 1) % (m_maxAvailableLOD + 1);
+            m_overlayText = GetLodText();
+            m_showOverlay = true;
+            if (m_renderer)
+                m_renderer->SetUserTargetLOD(m_targetLOD);
+            m_cachedSliceIndex = -1;  // Force re-render
+            KillTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID);
+            SetTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID, UI_DEBOUNCE_DELAY_MS, nullptr);
+            return true;
+        }
+
+        return false;
+    }
+
+    // Handle scroll wheel on UI controls, returns true if handled
+    bool HandleUIScroll(int x, int y, int delta)
+    {
+        if (!m_renderer)
+            return false;
+
+        POINT pt = { x, y };
+
+        // Scroll on Show region changes dimension
+        if (PtInRect(&m_uiShowRegion, pt))
+        {
+            int dimensionality = m_renderer->GetDimensionality();
+            int newDim = m_dimension + ((delta > 0) ? 1 : -1);
+            if (newDim < 0) newDim = dimensionality - 1;
+            if (newDim >= dimensionality) newDim = 0;
+
+            if (newDim != m_dimension)
+            {
+                m_lodRefinementEnabled = true;
+                m_targetLOD = 0;
+                m_renderer->SetUserTargetLOD(-1);
+                m_dimension = newDim;
+                int sliceCount = m_renderer->GetSliceCount(m_dimension);
+                m_sliceIndex = sliceCount / 2;
+                m_cachedSliceIndex = -1;
+            }
+            return true;
+        }
+
+        // Scroll on Quality region adjusts tolerance/ratio values or cycles mode
+        if (PtInRect(&m_uiQualityRegion, pt))
+        {
+            bool shiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            bool changed = false;
+
+            if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Tolerance)
+            {
+                float step = shiftPressed ? 0.01f : 0.1f;
+                float newVal = m_waveletAdaptiveTolerance + ((delta > 0) ? -step : step);
+                newVal = std::max(0.01f, std::min(1.0f, newVal));
+                if (newVal != m_waveletAdaptiveTolerance)
+                {
+                    m_waveletAdaptiveTolerance = newVal;
+                    changed = true;
+                }
+            }
+            else if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Ratio)
+            {
+                float step = shiftPressed ? 1.0f : 10.0f;
+                float newVal = m_waveletAdaptiveRatio + ((delta > 0) ? -step : step);
+                newVal = std::max(1.0f, std::min(100.0f, newVal));
+                if (newVal != m_waveletAdaptiveRatio)
+                {
+                    m_waveletAdaptiveRatio = newVal;
+                    changed = true;
+                }
+            }
+            else
+            {
+                m_waveletAdaptiveMode = (delta > 0) ? OpenVDS::WaveletAdaptiveMode::Ratio : OpenVDS::WaveletAdaptiveMode::Tolerance;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                m_overlayText = GetQualityText();
+                m_showOverlay = true;
+                m_lodRefinementEnabled = false;
+                m_uiPendingReopen = true;
+                KillTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID);
+                SetTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID, UI_DEBOUNCE_DELAY_MS, nullptr);
+            }
+            return true;
+        }
+
+        // Scroll on LOD region changes target LOD
+        if (PtInRect(&m_uiLodRegion, pt))
+        {
+            int newLOD = m_targetLOD + ((delta > 0) ? -1 : 1);
+            newLOD = std::max(0, std::min(m_maxAvailableLOD, newLOD));
+            if (newLOD != m_targetLOD)
+            {
+                m_lodRefinementEnabled = false;
+                m_targetLOD = newLOD;
+                m_overlayText = GetLodText();
+                m_showOverlay = true;
+                if (m_renderer)
+                    m_renderer->SetUserTargetLOD(m_targetLOD);
+                m_cachedSliceIndex = -1;
+                KillTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID);
+                SetTimer(m_hwndPreview, UI_DEBOUNCE_TIMER_ID, UI_DEBOUNCE_DELAY_MS, nullptr);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    // Reinitialize renderer with new wavelet adaptive settings
+    void ReinitializeWithNewSettings()
+    {
+        if (!m_stream) return;
+
+        int savedDimension = m_dimension;
+        int savedSlice = m_sliceIndex;
+
+        // Reset stream to beginning
+        LARGE_INTEGER zero = {};
+        m_stream->Seek(zero, STREAM_SEEK_SET, nullptr);
+
+        // Wait for any pending render
+        if (m_renderer)
+            m_renderer->WaitForPendingRender();
+
+        // Create new renderer with updated settings
+        m_renderer = std::make_unique<VdsRenderer>();
+        m_renderer->SetWaveletAdaptiveMode(m_waveletAdaptiveMode);
+        m_renderer->SetWaveletAdaptiveTolerance(m_waveletAdaptiveTolerance);
+        m_renderer->SetWaveletAdaptiveRatio(m_waveletAdaptiveRatio);
+        if (!m_lodRefinementEnabled)
+            m_renderer->SetUserTargetLOD(m_targetLOD);
+
+        m_renderer->SetLogFile(GetLogFilePath("openvds-previewpane.log").c_str());
+
+        if (m_renderer->Initialize(m_stream))
+        {
+            // Restore view state
+            m_dimension = savedDimension;
+            int sliceCount = m_renderer->GetSliceCount(m_dimension);
+            m_sliceIndex = std::min(savedSlice, sliceCount - 1);
+            m_cachedSliceIndex = -1;  // Force re-render
+        }
+        else
+        {
+            LogPreview("ReinitializeWithNewSettings: Initialize failed");
+            m_renderer.reset();
+        }
+    }
 
     // Create a test pattern bitmap (for debugging)
     HBITMAP CreateTestBitmap(int width, int height, int sliceIndex)
@@ -772,22 +1290,21 @@ private:
         RECT rc;
         GetClientRect(m_hwndPreview, &rc);
 
-        // Calculate actual bitmap display area (right half of window, minus info/status areas)
-        // The window is split: left half = info panel, right half = bitmap display
+        // Calculate actual bitmap display area (full pane minus status bar)
         int totalWidth = rc.right - rc.left;
         int totalHeight = rc.bottom - rc.top;
-        int bitmapAreaWidth = totalWidth / 2 - 20;  // Right half minus margins
-        int bitmapAreaHeight = totalHeight - 80;     // Minus info and status bars
+        int statusBarHeight = 24;
+        int bitmapAreaWidth = totalWidth;
+        int bitmapAreaHeight = totalHeight - statusBarHeight;
         int maxSize = std::max(bitmapAreaWidth, bitmapAreaHeight);
 
         // Ensure reasonable bounds
-        // Cap at 500px to ensure higher LODs are used for large VDS files
-        // For a 1176px slice: LOD1 gives 588px effective res, which is > 500
-        // This provides good quality while being ~30x faster than full resolution
+        // Cap at 800px for preview pane - larger than before since full width is used
         if (maxSize < 100) maxSize = 100;
-        if (maxSize > 500) maxSize = 500;
+        if (maxSize > 800) maxSize = 800;
 
-        LogPreviewFmt("Render: slice=%d, maxSize=%d (window: %dx%d)", m_sliceIndex, maxSize, totalWidth, totalHeight);
+        LogPreviewFmt("Render: slice=%d, maxSize=%d, lodRefinement=%d (window: %dx%d)",
+                      m_sliceIndex, maxSize, m_lodRefinementEnabled ? 1 : 0, totalWidth, totalHeight);
 
         // Use RAII pattern to ensure flag is always reset
         m_isRendering = true;
@@ -796,7 +1313,9 @@ private:
             ~RenderGuard() { flag = false; }
         } guard{m_isRendering};
 
-        HBITMAP newBitmap = m_renderer->RenderSlice(m_dimension, m_sliceIndex, maxSize);
+        // Pass lodRefinementEnabled to control progressive LOD behavior
+        // When adjusting quality/LOD settings, go straight to target LOD (no refinement)
+        HBITMAP newBitmap = m_renderer->RenderSlice(m_dimension, m_sliceIndex, maxSize, m_lodRefinementEnabled);
 
         // Copy VdsRenderer debug messages to the global debug display
         const auto& vdsDebug = m_renderer->GetLastRenderDebugMessages();
@@ -823,8 +1342,9 @@ private:
             swprintf_s(buf, L"OK: %dx%d", bm.bmWidth, bm.bmHeight);
             m_lastError = buf;
 
-            // Progressive LOD: if refinement is pending, trigger another render
-            if (m_renderer->IsRefinementPending())
+            // Progressive LOD: if refinement is pending and enabled, trigger another render
+            // Skip refinement when manually adjusting quality/LOD settings
+            if (m_lodRefinementEnabled && m_renderer->IsRefinementPending())
             {
                 // Invalidate to trigger another render cycle for better quality
                 // Small delay allows the current frame to display first
@@ -882,98 +1402,200 @@ private:
         RECT rc;
         GetClientRect(m_hwndPreview, &rc);
 
-        int totalWidth = rc.right - rc.left;
-        int midX = totalWidth / 2;
+        int width = rc.right - rc.left;
+        int height = rc.bottom - rc.top;
+        int statusBarHeight = 24;
+        int bitmapAreaHeight = height - statusBarHeight;
 
-        // Left panel: Debug log (white background)
-        RECT leftRect = { rc.left, rc.top, midX - 2, rc.bottom };
-        HBRUSH hbrWhite = CreateSolidBrush(RGB(255, 255, 255));
-        FillRect(hdc, &leftRect, hbrWhite);
-        DeleteObject(hbrWhite);
+        // Create back buffer
+        HDC hdcMem = CreateCompatibleDC(hdc);
+        HBITMAP hbmMem = CreateCompatibleBitmap(hdc, width, height);
+        HBITMAP hbmOld = (HBITMAP)SelectObject(hdcMem, hbmMem);
 
-        // Right panel bounds (don't clear - bitmap will be drawn over it)
-        RECT rightRect = { midX + 2, rc.top, rc.right, rc.bottom };
+        // Fill background white
+        HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
+        RECT clientRect = { 0, 0, width, height };
+        FillRect(hdcMem, &clientRect, hBrush);
+        DeleteObject(hBrush);
 
-        // Divider
-        RECT divider = { midX - 2, rc.top, midX + 2, rc.bottom };
-        HBRUSH hbrDiv = CreateSolidBrush(RGB(180, 180, 180));
-        FillRect(hdc, &divider, hbrDiv);
-        DeleteObject(hbrDiv);
-
-        // Draw debug messages on left (black text on white)
-        DrawDebugMessages(hdc, leftRect, RGB(0, 0, 0));
-
-        // Right panel layout: VDS info on top, bitmap in middle, status at bottom
         if (m_renderer)
         {
-            // Update cached bitmap if needed (checks slice index internally)
+            // Update cached bitmap if needed
             UpdateCachedBitmap();
 
-            int infoHeight = 220;  // Height for VDS info section
-            int statusHeight = 28;
-            int bitmapAreaTop = rightRect.top + infoHeight;
-            int bitmapAreaBottom = rightRect.bottom - statusHeight;
-
-            // Top: VDS info panel (fill just this area)
-            RECT infoRect = { rightRect.left, rightRect.top, rightRect.right, rightRect.top + infoHeight };
-            HBRUSH hbrInfo = CreateSolidBrush(RGB(245, 245, 245));
-            FillRect(hdc, &infoRect, hbrInfo);
-            DeleteObject(hbrInfo);
-            DrawVdsInfoPanel(hdc, infoRect);
-
-            // Separator line
-            RECT sepLine = { rightRect.left + 8, infoRect.bottom - 1, rightRect.right - 8, infoRect.bottom + 1 };
-            HBRUSH hbrSep = CreateSolidBrush(RGB(200, 200, 200));
-            FillRect(hdc, &sepLine, hbrSep);
-            DeleteObject(hbrSep);
-
-            // Middle: bitmap
+            // Draw centered bitmap (full pane width)
             if (m_cachedBitmap)
             {
                 BITMAP bm;
                 GetObject(m_cachedBitmap, sizeof(bm), &bm);
 
-                int availW = rightRect.right - rightRect.left - 20;
-                int availH = bitmapAreaBottom - bitmapAreaTop - 10;
-                if (availW > 0 && availH > 0)
-                {
-                    float scale = std::min((float)availW / bm.bmWidth, (float)availH / bm.bmHeight);
-                    int destW = (int)(bm.bmWidth * scale);
-                    int destH = (int)(bm.bmHeight * scale);
-                    int destX = rightRect.left + (rightRect.right - rightRect.left - destW) / 2;
-                    int destY = bitmapAreaTop + (bitmapAreaBottom - bitmapAreaTop - destH) / 2;
+                // Calculate centered position with aspect ratio preservation
+                float scaleX = (float)width / bm.bmWidth;
+                float scaleY = (float)bitmapAreaHeight / bm.bmHeight;
+                float scale = std::min(scaleX, scaleY);
 
-                    HDC hdcMem = CreateCompatibleDC(hdc);
-                    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, m_cachedBitmap);
-                    SetStretchBltMode(hdc, HALFTONE);
-                    StretchBlt(hdc, destX, destY, destW, destH,
-                              hdcMem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
-                    SelectObject(hdcMem, hOldBitmap);
-                    DeleteDC(hdcMem);
-                }
+                int displayWidth = (int)(bm.bmWidth * scale);
+                int displayHeight = (int)(bm.bmHeight * scale);
+                int bitmapX = (width - displayWidth) / 2;
+                int bitmapY = (bitmapAreaHeight - displayHeight) / 2;
+
+                HDC hdcBitmap = CreateCompatibleDC(hdc);
+                HBITMAP hbmOldBitmap = (HBITMAP)SelectObject(hdcBitmap, m_cachedBitmap);
+
+                SetStretchBltMode(hdcMem, HALFTONE);
+                SetBrushOrgEx(hdcMem, 0, 0, nullptr);
+                StretchBlt(hdcMem, bitmapX, bitmapY, displayWidth, displayHeight,
+                           hdcBitmap, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+
+                SelectObject(hdcBitmap, hbmOldBitmap);
+                DeleteDC(hdcBitmap);
             }
 
-            // Bottom: slice navigation status
-            RECT statusRect = { rightRect.left, rightRect.bottom - statusHeight, rightRect.right, rightRect.bottom };
-            HBRUSH hbrStatus = CreateSolidBrush(RGB(60, 60, 60));
-            FillRect(hdc, &statusRect, hbrStatus);
-            DeleteObject(hbrStatus);
+            // Draw UI controls overlay
+            DrawUIControls(hdcMem, hdc, width, bitmapAreaHeight);
 
-            ::SetTextColor(hdc, RGB(220, 220, 220));
-            ::SetBkMode(hdc, TRANSPARENT);
-            wchar_t buf[128];
+            // Draw overlay text if adjusting controls
+            if (m_showOverlay && !m_overlayText.empty())
+            {
+                // Create large font (80pt for preview pane - smaller than full viewer)
+                HFONT hOverlayFont = CreateFontW(-107, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                HFONT hOldFont = (HFONT)SelectObject(hdcMem, hOverlayFont);
+
+                // Measure text size
+                RECT measureRect = { 0, 0, 0, 0 };
+                DrawTextW(hdcMem, m_overlayText.c_str(), -1, &measureRect,
+                         DT_CALCRECT | DT_SINGLELINE);
+                int textWidth = measureRect.right - measureRect.left;
+                int textHeight = measureRect.bottom - measureRect.top;
+
+                // Center in bitmap area
+                int centerX = width / 2;
+                int centerY = bitmapAreaHeight / 2;
+                int bgPaddingH = 20;
+                int bgPaddingV = 6;
+
+                RECT bgRect = {
+                    centerX - textWidth / 2 - bgPaddingH,
+                    centerY - textHeight / 2 - bgPaddingV,
+                    centerX + textWidth / 2 + bgPaddingH,
+                    centerY + textHeight / 2 + bgPaddingV
+                };
+
+                // Draw 10% opaque black background
+                {
+                    int bgWidth = bgRect.right - bgRect.left;
+                    int bgHeight = bgRect.bottom - bgRect.top;
+
+                    HDC hdcAlpha = CreateCompatibleDC(hdc);
+                    HBITMAP hbmAlpha = CreateCompatibleBitmap(hdc, bgWidth, bgHeight);
+                    HBITMAP hbmOldAlpha = (HBITMAP)SelectObject(hdcAlpha, hbmAlpha);
+
+                    RECT fillRect = { 0, 0, bgWidth, bgHeight };
+                    HBRUSH hBlackBrush = CreateSolidBrush(RGB(0, 0, 0));
+                    FillRect(hdcAlpha, &fillRect, hBlackBrush);
+                    DeleteObject(hBlackBrush);
+
+                    BLENDFUNCTION bf = {};
+                    bf.BlendOp = AC_SRC_OVER;
+                    bf.SourceConstantAlpha = 25;
+                    AlphaBlend(hdcMem, bgRect.left, bgRect.top, bgWidth, bgHeight,
+                               hdcAlpha, 0, 0, bgWidth, bgHeight, bf);
+
+                    SelectObject(hdcAlpha, hbmOldAlpha);
+                    DeleteObject(hbmAlpha);
+                    DeleteDC(hdcAlpha);
+                }
+
+                // Draw text centered
+                RECT overlayRect = { 0, 0, width, bitmapAreaHeight };
+                SetBkMode(hdcMem, TRANSPARENT);
+
+                // Shadow
+                ::SetTextColor(hdcMem, RGB(0, 0, 0));
+                RECT shadowRect = overlayRect;
+                OffsetRect(&shadowRect, 2, 2);
+                DrawTextW(hdcMem, m_overlayText.c_str(), -1, &shadowRect,
+                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                // Text in white
+                ::SetTextColor(hdcMem, RGB(255, 255, 255));
+                DrawTextW(hdcMem, m_overlayText.c_str(), -1, &overlayRect,
+                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                SelectObject(hdcMem, hOldFont);
+                DeleteObject(hOverlayFont);
+            }
+
+            // Status bar at bottom (white background, black text)
+            RECT statusRect = { 0, height - statusBarHeight, width, height };
+            hBrush = CreateSolidBrush(RGB(255, 255, 255));
+            FillRect(hdcMem, &statusRect, hBrush);
+            DeleteObject(hBrush);
+
+            ::SetTextColor(hdcMem, RGB(0, 0, 0));
+            SetBkMode(hdcMem, TRANSPARENT);
+
+            // Build status text
+            wchar_t buf[256];
             if (m_renderer->GetDimensionality() >= 3)
             {
                 const wchar_t* dimName = m_renderer->GetDimensionName(m_dimension);
-                swprintf_s(buf, L"%s Slice %d / %d  |  Scroll to navigate",
-                          dimName, m_sliceIndex + 1, m_renderer->GetSliceCount(m_dimension));
+                const std::wstring& groupName = m_renderer->GetLastDimensionGroup();
+                int lodCount = m_renderer->GetLastLODCount();
+                int selectedLOD = m_renderer->GetLastSelectedLOD();
+
+                swprintf_s(buf, L"%s: %d / %d  |  %s LOD%d/%d  |  Scroll: slices",
+                    dimName,
+                    m_sliceIndex + 1,
+                    m_renderer->GetSliceCount(m_dimension),
+                    groupName.c_str(),
+                    selectedLOD,
+                    lodCount);
             }
             else
             {
                 swprintf_s(buf, L"2D Data");
             }
-            DrawTextW(hdc, buf, -1, &statusRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            HFONT hStatusFont = CreateFontW(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+            HFONT hOldStatusFont = (HFONT)SelectObject(hdcMem, hStatusFont);
+
+            statusRect.left += 8;
+            DrawTextW(hdcMem, buf, -1, &statusRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+            SelectObject(hdcMem, hOldStatusFont);
+            DeleteObject(hStatusFont);
         }
+        else
+        {
+            // No renderer - show error or loading message
+            SetBkMode(hdcMem, TRANSPARENT);
+            ::SetTextColor(hdcMem, RGB(128, 128, 128));
+
+            HFONT hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HFONT hOldFont = (HFONT)SelectObject(hdcMem, hFont);
+
+            RECT textRect = { 0, 0, width, bitmapAreaHeight };
+            const wchar_t* message = m_lastError.empty() ? L"Loading VDS file..." : m_lastError.c_str();
+            DrawTextW(hdcMem, message, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            SelectObject(hdcMem, hOldFont);
+            DeleteObject(hFont);
+        }
+
+        // Copy back buffer to screen
+        BitBlt(hdc, 0, 0, width, height, hdcMem, 0, 0, SRCCOPY);
+
+        // Cleanup
+        SelectObject(hdcMem, hbmOld);
+        DeleteObject(hbmMem);
+        DeleteDC(hdcMem);
 
         EndPaint(m_hwndPreview, &ps);
     }

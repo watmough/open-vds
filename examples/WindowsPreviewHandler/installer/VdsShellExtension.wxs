@@ -33,6 +33,13 @@
                 Source="$(StagingDir)\openvds.dll"/>
         </Component>
 
+        <!-- VDS Viewer Application -->
+        <Component Id="VdsViewerExe" Guid="C3D4E5F6-A7B8-6C7D-0E1F-2A3B4C5D6E7F">
+          <File Id="vds_viewer.exe"
+                Name="vds-viewer.exe"
+                Source="$(StagingDir)\vds-viewer.exe"/>
+        </Component>
+
         <!-- VdsShellExtension DLL with all registry entries -->
         <Component Id="VdsShellExtensionDll" Guid="B2C3D4E5-F6A7-5B6C-9D0E-1F2A3B4C5D6E">
           <File Id="VdsShellExtension.dll"
@@ -46,9 +53,24 @@
           <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document">
             <RegistryValue Type="string" Value="OpenVDS Volume Data"/>
           </RegistryKey>
-          <!-- Default open command (required for shell extensions to activate) -->
+          <!-- Default icon for .vds files -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document\DefaultIcon">
+            <RegistryValue Type="string" Value="[INSTALLFOLDER]vds-viewer.exe,0"/>
+          </RegistryKey>
+          <!-- Default open command - launches VDS Viewer -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document\shell">
+            <RegistryValue Type="string" Value="open"/>
+          </RegistryKey>
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document\shell\open">
+            <RegistryValue Type="string" Value="Open with VDS Viewer"/>
+          </RegistryKey>
           <RegistryKey Root="HKLM" Key="SOFTWARE\Classes\OpenVDS.Document\shell\open\command">
-            <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]VdsShellExtension.dll&quot; &quot;%1&quot;"/>
+            <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]vds-viewer.exe&quot; &quot;%1&quot;"/>
+          </RegistryKey>
+          <!-- Register application in App Paths for easier launching -->
+          <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\vds-viewer.exe">
+            <RegistryValue Type="string" Value="[INSTALLFOLDER]vds-viewer.exe"/>
+            <RegistryValue Name="Path" Type="string" Value="[INSTALLFOLDER]"/>
           </RegistryKey>
 
           <!-- Thumbnail Handler CLSID Registration -->
@@ -100,6 +122,7 @@
     <Feature Id="ProductFeature" Title="VDS Shell Extension" Level="1">
       <ComponentRef Id="OpenVdsDll"/>
       <ComponentRef Id="VdsShellExtensionDll"/>
+      <ComponentRef Id="VdsViewerExe"/>
     </Feature>
 
     <!-- UI - Minimal dialog -->
