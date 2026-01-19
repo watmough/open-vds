@@ -754,16 +754,12 @@ private:
     std::wstring m_overlayText;
     bool m_showOverlay = false;
 
-    // Get current show dimension text
+    // Get current show dimension text - uses actual dimension name from VDS
     const wchar_t* GetShowText() const
     {
-        switch (m_dimension)
-        {
-            case 2: return L"Inline";
-            case 1: return L"Xline";
-            case 0: return L"Z-slice";
-            default: return L"Inline";
-        }
+        if (m_renderer)
+            return m_renderer->GetDimensionName(m_dimension);
+        return L"--";
     }
 
     // Get current quality mode text
@@ -1023,13 +1019,16 @@ private:
 
         POINT pt = { x, y };
 
-        // Check Show text area - cycle through dimensions
+        // Check Show text area - cycle through dimensions (only for 3D+ data)
         if (PtInRect(&m_uiShowRegion, pt))
         {
             int dimensionality = m_renderer->GetDimensionality();
+            // Only allow dimension cycling for 3D data
+            if (dimensionality < 3)
+                return true;  // Consume click but don't change anything
+
             int newDim = m_dimension - 1;
             if (newDim < 0) newDim = dimensionality - 1;
-            if (newDim < 0) newDim = 0;
 
             m_lodRefinementEnabled = true;
             m_targetLOD = 0;
@@ -1091,10 +1090,14 @@ private:
 
         POINT pt = { x, y };
 
-        // Scroll on Show region changes dimension
+        // Scroll on Show region changes dimension (only for 3D+ data)
         if (PtInRect(&m_uiShowRegion, pt))
         {
             int dimensionality = m_renderer->GetDimensionality();
+            // Only allow dimension cycling for 3D data
+            if (dimensionality < 3)
+                return true;  // Consume scroll but don't change anything
+
             int newDim = m_dimension + ((delta > 0) ? 1 : -1);
             if (newDim < 0) newDim = dimensionality - 1;
             if (newDim >= dimensionality) newDim = 0;

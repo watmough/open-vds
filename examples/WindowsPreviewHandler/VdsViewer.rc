@@ -1,0 +1,7 @@
+// VDS Viewer Resource File
+// Icon resource - IDI_ICON1 is the main application icon
+
+#define IDI_ICON1 1
+
+// Main application icon (shown in Explorer, taskbar, etc.)
+IDI_ICON1 ICON "installer\\vds shell extension z.ico"

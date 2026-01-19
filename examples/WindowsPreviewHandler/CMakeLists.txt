@@ -82,6 +82,7 @@ if(WIN32)
     VdsViewer.cpp
     VdsRenderer.cpp
     VdsRenderer.h
+    VdsViewer.rc
   )
 
   target_link_libraries(VdsViewer

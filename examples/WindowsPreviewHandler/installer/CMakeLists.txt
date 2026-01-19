@@ -30,15 +30,23 @@ file(MAKE_DIRECTORY ${STAGING_DIR})
 set(WXS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/VdsShellExtension.wxs")
 set(MSI_FILE "${CMAKE_CURRENT_BINARY_DIR}/VdsShellExtension.msi")
 
-# Custom command to stage DLLs and EXEs
+# Icon files
+set(ICON_VDS "${CMAKE_CURRENT_SOURCE_DIR}/vds shell extension.ico")
+set(ICON_VDS_Z "${CMAKE_CURRENT_SOURCE_DIR}/vds shell extension z.ico")
+
+# Custom command to stage DLLs, EXEs, and icons
 add_custom_command(
-  OUTPUT ${STAGING_DIR}/openvds.dll ${STAGING_DIR}/VdsShellExtension.dll ${STAGING_DIR}/vds-viewer.exe
+  OUTPUT ${STAGING_DIR}/openvds.dll ${STAGING_DIR}/VdsShellExtension.dll ${STAGING_DIR}/vds-viewer.exe ${STAGING_DIR}/vds-file.ico ${STAGING_DIR}/vds-viewer.ico
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     $<TARGET_FILE:openvds> ${STAGING_DIR}/openvds.dll
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     $<TARGET_FILE:VdsShellExtension> ${STAGING_DIR}/VdsShellExtension.dll
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     $<TARGET_FILE:VdsViewer> ${STAGING_DIR}/vds-viewer.exe
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${ICON_VDS}" ${STAGING_DIR}/vds-file.ico
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${ICON_VDS_Z}" ${STAGING_DIR}/vds-viewer.ico
   DEPENDS openvds VdsShellExtension VdsViewer
   COMMENT "Staging files for MSI installer"
 )
@@ -53,7 +61,7 @@ add_custom_command(
     -d StagingDir=${STAGING_DIR}
     -ext WixToolset.UI.wixext
     -o ${MSI_FILE}
-  DEPENDS ${WXS_SOURCE} ${STAGING_DIR}/openvds.dll ${STAGING_DIR}/VdsShellExtension.dll ${STAGING_DIR}/vds-viewer.exe
+  DEPENDS ${WXS_SOURCE} ${STAGING_DIR}/openvds.dll ${STAGING_DIR}/VdsShellExtension.dll ${STAGING_DIR}/vds-viewer.exe ${STAGING_DIR}/vds-file.ico ${STAGING_DIR}/vds-viewer.ico
   COMMENT "Building MSI installer with WiX 5"
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
 )
