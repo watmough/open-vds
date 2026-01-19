@@ -1467,15 +1467,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             {
                 g_app.uiPendingReopen = false;
                 std::wstring path = g_app.filePath;
+                // Save current view state before reopening
+                int savedDimension = g_app.currentDimension;
+                int savedSlice = g_app.currentSlice;
                 int savedTargetLOD = g_app.targetLOD;
                 bool savedLodRefinementEnabled = g_app.lodRefinementEnabled;
                 CloseVdsFile();
                 OpenVdsFile(path);
-                // Restore user's target LOD setting after reopen if manually set
+                // Restore view state after reopen
+                g_app.currentDimension = savedDimension;
+                g_app.sliceCount = g_app.renderer ? g_app.renderer->GetSliceCount(savedDimension) : 1;
+                g_app.currentSlice = std::min(savedSlice, g_app.sliceCount - 1);
                 g_app.targetLOD = savedTargetLOD;
                 g_app.lodRefinementEnabled = savedLodRefinementEnabled;
                 if (g_app.renderer && !savedLodRefinementEnabled)
                     g_app.renderer->SetUserTargetLOD(savedTargetLOD);
+                // Re-render with restored settings
+                RenderCurrentSlice();
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;

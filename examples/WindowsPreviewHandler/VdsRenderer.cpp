@@ -1082,38 +1082,57 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         }
         dbg.push_back(dimStr);
 
-        // Set up voxel bounds
-        // Always display dim0 × dim1, slice on dim2+ (if they exist)
+        // Determine which dimensions to display based on which is fixed (sliced)
+        // For 3D: fix one dimension, display the other two
+        int displayDim0, displayDim1;  // The two dimensions we'll display
+        OpenVDS::DimensionsND targetDimGroup;
+
+        if (dimensionality >= 3)
+        {
+            if (sliceOnDimension == 0) {
+                // Z-slice: fix dim0 (Sample), display dim1 × dim2
+                displayDim0 = 1; displayDim1 = 2;
+                targetDimGroup = OpenVDS::Dimensions_12;
+            } else if (sliceOnDimension == 1) {
+                // Xline: fix dim1 (Crossline), display dim0 × dim2
+                displayDim0 = 0; displayDim1 = 2;
+                targetDimGroup = OpenVDS::Dimensions_02;
+            } else { // sliceOnDimension == 2 (or higher for 4D+)
+                // Inline: fix dim2 (Inline), display dim0 × dim1
+                displayDim0 = 0; displayDim1 = 1;
+                targetDimGroup = OpenVDS::Dimensions_01;
+            }
+        }
+        else
+        {
+            // 2D: only one orientation possible
+            displayDim0 = 0; displayDim1 = 1;
+            targetDimGroup = OpenVDS::Dimensions_01;
+        }
+
+        int dim0Size = m_layout->GetDimensionNumSamples(displayDim0);
+        int dim1Size = m_layout->GetDimensionNumSamples(displayDim1);
+
+        // Set up voxel bounds for all dimensions
         int voxelMin[OpenVDS::Dimensionality_Max] = { 0, 0, 0, 0, 0, 0 };
         int voxelMax[OpenVDS::Dimensionality_Max] = { 1, 1, 1, 1, 1, 1 };
 
-        // Display dimensions are always dim0 and dim1
-        int dim0 = 0;
-        int dim1 = 1;
-        int dim0Size = m_layout->GetDimensionNumSamples(0);
-        int dim1Size = m_layout->GetDimensionNumSamples(1);
-
-        // Full extent for display dimensions
-        voxelMin[0] = 0;
-        voxelMax[0] = dim0Size;
-        voxelMin[1] = 0;
-        voxelMax[1] = dim1Size;
-
-        // For dimensions 2 and above:
-        // - The sliceOnDimension parameter specifies which dimension to slice
-        // - All other dimensions (2 through dimensionality-1) are fixed at midpoint
-        // - sliceOnDimension is set to sliceIndex
-        for (int dim = 2; dim < dimensionality; dim++)
+        for (int dim = 0; dim < dimensionality; dim++)
         {
-            if (dim == sliceOnDimension)
-            {
-                // This is the dimension we're slicing on
+            if (dim == displayDim0) {
+                // First display dimension - full extent
+                voxelMin[dim] = 0;
+                voxelMax[dim] = m_layout->GetDimensionNumSamples(dim);
+            } else if (dim == displayDim1) {
+                // Second display dimension - full extent
+                voxelMin[dim] = 0;
+                voxelMax[dim] = m_layout->GetDimensionNumSamples(dim);
+            } else if (dim == sliceOnDimension) {
+                // Fixed/sliced dimension - use slice index
                 voxelMin[dim] = sliceIndex;
                 voxelMax[dim] = sliceIndex + 1;
-            }
-            else
-            {
-                // Other dimensions fixed at midpoint
+            } else {
+                // Other dimensions (for 4D+) - fix at midpoint
                 int midpoint = m_layout->GetDimensionNumSamples(dim) / 2;
                 voxelMin[dim] = midpoint;
                 voxelMax[dim] = midpoint + 1;
@@ -1125,67 +1144,86 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         // 3D poststack: dim0=Sample, dim1=Crossline, dim2=Inline
         // 4D prestack:  dim0=Sample, dim1=Offset, dim2=Crossline, dim3=Inline
         //
-        // Display: dim0 (Sample) is Y-axis (vertical), dim1 is X-axis (horizontal)
-        // Slice on dim2 (Inline for 3D)
+        // Display dimensions determined by sliceOnDimension:
+        // - sliceOnDimension=2 (Inline): display dim0 × dim1 (Sample × Xline)
+        // - sliceOnDimension=1 (Xline): display dim0 × dim2 (Sample × Inline)
+        // - sliceOnDimension=0 (Z-slice): display dim1 × dim2 (Xline × Inline)
 
-        // Find available dimension groups
-        struct DimGroupInfo {
-            OpenVDS::DimensionsND group;
-            const wchar_t* name;
-        };
-        DimGroupInfo allGroups[] = {
-            { OpenVDS::Dimensions_01, L"01" },
-            { OpenVDS::Dimensions_02, L"02" },
-            { OpenVDS::Dimensions_12, L"12" },
-            { OpenVDS::Dimensions_012, L"012" },
-        };
-        OpenVDS::DimensionsND dimGroup = OpenVDS::Dimensions_01;
-        const wchar_t* selectedGroupName = L"01";
+        // Select dimension group for this orientation
+        // Priority:
+        // 1. Target 2D group matching orientation (01, 02, or 12) if available with LODs
+        // 2. Dimensions_012 (can serve any 2D request, often has LODs)
+        // 3. Target 2D group without LODs (may work via Remapped)
         int lodCount = static_cast<int>(m_layout->GetLayoutDescriptor().GetLODLevels());
 
-        int selectedLODCount = 1;
-        if (m_preferLODs && lodCount > 1)
+        // Get target group name for display
+        const wchar_t* targetGroupName =
+            (targetDimGroup == OpenVDS::Dimensions_01) ? L"01" :
+            (targetDimGroup == OpenVDS::Dimensions_02) ? L"02" :
+            (targetDimGroup == OpenVDS::Dimensions_12) ? L"12" : L"??";
+
+        OpenVDS::DimensionsND dimGroup = targetDimGroup;
+        const wchar_t* selectedGroupName = targetGroupName;
+        int selectedLODCount = 0;
+
+        // Check if target 2D group is available
+        auto targetStatus = accessManager.GetVDSProduceStatus(targetDimGroup, 0, 0);
+        bool targetAvailable = (targetStatus != OpenVDS::VDSProduceStatus::Unavailable);
+
+        // Count LODs for target group
+        if (targetAvailable)
         {
-            // Prefer dimension groups that have multiple LODs available
-            int bestLODCount = 0;
-            for (const auto& dg : allGroups)
+            for (int lod = 0; lod < lodCount; lod++)
             {
-                auto status0 = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
-                if (status0 == OpenVDS::VDSProduceStatus::Unavailable)
-                    continue;
-
-                // Count available LODs for this group
-                int availableLODs = 0;
-                for (int lod = 0; lod < lodCount; lod++)
-                {
-                    auto status = accessManager.GetVDSProduceStatus(dg.group, lod, 0);
-                    if (status != OpenVDS::VDSProduceStatus::Unavailable)
-                        availableLODs++;
-                }
-
-                if (availableLODs > bestLODCount)
-                {
-                    bestLODCount = availableLODs;
-                    dimGroup = dg.group;
-                    selectedGroupName = dg.name;
-                    selectedLODCount = availableLODs;
-                }
+                auto status = accessManager.GetVDSProduceStatus(targetDimGroup, lod, 0);
+                if (status != OpenVDS::VDSProduceStatus::Unavailable)
+                    selectedLODCount++;
             }
-            swprintf_s(buf, L"PreferLODs: selected %s with %d LODs", selectedGroupName, bestLODCount);
-            dbg.push_back(buf);
         }
-        else
+
+        // Check Dimensions_012 as fallback - it can serve any 2D slice and often has LODs
+        auto status012 = accessManager.GetVDSProduceStatus(OpenVDS::Dimensions_012, 0, 0);
+        if (status012 != OpenVDS::VDSProduceStatus::Unavailable)
         {
-            // Default: pick first available group
+            int lod012Count = 0;
+            for (int lod = 0; lod < lodCount; lod++)
+            {
+                auto status = accessManager.GetVDSProduceStatus(OpenVDS::Dimensions_012, lod, 0);
+                if (status != OpenVDS::VDSProduceStatus::Unavailable)
+                    lod012Count++;
+            }
+
+            // Prefer 012 if:
+            // - Target group is unavailable, OR
+            // - 012 has more LODs than target group
+            if (!targetAvailable || lod012Count > selectedLODCount)
+            {
+                dimGroup = OpenVDS::Dimensions_012;
+                selectedGroupName = L"012";
+                selectedLODCount = lod012Count;
+            }
+        }
+
+        // If still nothing available, fall back to searching all groups
+        if (selectedLODCount == 0)
+        {
+            struct DimGroupInfo {
+                OpenVDS::DimensionsND group;
+                const wchar_t* name;
+            };
+            DimGroupInfo allGroups[] = {
+                { OpenVDS::Dimensions_01, L"01" },
+                { OpenVDS::Dimensions_02, L"02" },
+                { OpenVDS::Dimensions_12, L"12" },
+                { OpenVDS::Dimensions_012, L"012" },
+            };
             for (const auto& dg : allGroups)
             {
                 auto status0 = accessManager.GetVDSProduceStatus(dg.group, 0, 0);
-                if (status0 == OpenVDS::VDSProduceStatus::Normal)
+                if (status0 != OpenVDS::VDSProduceStatus::Unavailable)
                 {
                     dimGroup = dg.group;
                     selectedGroupName = dg.name;
-                    // Count LODs for this group
-                    selectedLODCount = 0;
                     for (int lod = 0; lod < lodCount; lod++)
                     {
                         auto status = accessManager.GetVDSProduceStatus(dg.group, lod, 0);
@@ -1295,31 +1333,31 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
 
         // Calculate LOD-sized buffer dimensions correctly
         // Only decimate dimensions that are NOT the full resolution dimension
+        // Use displayDim0/displayDim1 which may differ based on slice orientation
         int lodDim0Size, lodDim1Size;
-        if (fullResDim == 0)
+        if (fullResDim == displayDim0)
         {
-            // Dim0 keeps full resolution, only dim1 is decimated
-            lodDim0Size = voxelMax[0] - voxelMin[0];
-            lodDim1Size = GetLODSize(voxelMin[1], voxelMax[1], selectedLOD);
+            // displayDim0 keeps full resolution, only displayDim1 is decimated
+            lodDim0Size = voxelMax[displayDim0] - voxelMin[displayDim0];
+            lodDim1Size = GetLODSize(voxelMin[displayDim1], voxelMax[displayDim1], selectedLOD);
         }
-        else if (fullResDim == 1)
+        else if (fullResDim == displayDim1)
         {
-            // Dim1 keeps full resolution, only dim0 is decimated
-            lodDim0Size = GetLODSize(voxelMin[0], voxelMax[0], selectedLOD);
-            lodDim1Size = voxelMax[1] - voxelMin[1];
+            // displayDim1 keeps full resolution, only displayDim0 is decimated
+            lodDim0Size = GetLODSize(voxelMin[displayDim0], voxelMax[displayDim0], selectedLOD);
+            lodDim1Size = voxelMax[displayDim1] - voxelMin[displayDim1];
         }
         else
         {
-            // Neither dim0 nor dim1 is full resolution, both are decimated
-            lodDim0Size = GetLODSize(voxelMin[0], voxelMax[0], selectedLOD);
-            lodDim1Size = GetLODSize(voxelMin[1], voxelMax[1], selectedLOD);
+            // Neither display dimension is full resolution, both are decimated
+            lodDim0Size = GetLODSize(voxelMin[displayDim0], voxelMax[displayDim0], selectedLOD);
+            lodDim1Size = GetLODSize(voxelMin[displayDim1], voxelMax[displayDim1], selectedLOD);
         }
 
-        // OpenVDS returns data with dim0 as fastest-varying
-        // buffer layout: buffer[dim1_idx * lodDim0Size + dim0_idx]
+        // OpenVDS returns data with lowest-numbered dimension as fastest-varying
+        // buffer layout depends on which dimensions are in the request
         //
-        // For display: dim0 (Sample) should be vertical (Y), dim1 should be horizontal (X)
-        // This requires transposing the buffer when creating the bitmap
+        // For display: displayDim0 is vertical (Y), displayDim1 is horizontal (X)
         int width = lodDim1Size;
         int height = lodDim0Size;
 
