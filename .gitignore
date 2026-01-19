@@ -31,5 +31,6 @@ pytest.ini
 /**/ovdspy
 .venv*/
 py*env/
-build 
-3rdparty 
+build
+3rdparty
+/**/*.log
