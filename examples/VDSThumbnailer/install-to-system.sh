@@ -31,20 +31,18 @@ elif [[ -z "$pel" ]]; then
 fi
 
 # Ensure mime type is registered to user
-xdg-mime install --mode user "$mmt"
+sudo xdg-mime install --mode system --novendor "$mmt"
 
 # Create .local/share/thumbnailers if needed, and copy the thumbnailer entry
-if [[ ! -d "$HOME/.local/share/thumbnailers" ]]; then
-  mkdir -p $HOME/.local/share/thumbnailers
+if [[ ! -d "/usr/share/thumbnailers" ]]; then
+  mkdir -p /usr/share/thumbnailers
 fi
-cp "$tmb" $HOME/.local/share/thumbnailers
+cp "$tmb" /usr/share/thumbnailers
 
 # copy other exe and lib
-mkdir -p $HOME/.local/bin
-mkdir -p $HOME/.local/lib
-cp -f "$exe" $HOME/.local/bin/
-cp -f "$opv" $HOME/.local/lib/
+cp -f "$exe" /usr/bin/
+cp -f "$opv" /usr/lib/
 
 # Fix up RPATH on vds-thumbnailer
-patchelf --remove-rpath ~/.local/bin/vds-thumbnailer
-patchelf --set-rpath '$ORIGIN/../lib/' ~/.local/bin/vds-thumbnailer
+patchelf --remove-rpath /usr/bin/vds-thumbnailer
+patchelf --set-rpath '$ORIGIN/../lib/' /usr/bin/vds-thumbnailer

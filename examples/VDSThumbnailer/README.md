@@ -25,7 +25,7 @@ Note that `bwrap` is used here to sandbox the `vds-thumbnailer`.
 
 ### Full open-vds 
 
-For a full open-vds build, add -DBUILD_FOR_SANDBOX to the cmake configuration command.
+Build open-vds, but turn off all cloud functionality, as this is not compatible with running in a Linux sandbox.
 
 open-vds will then build with many libs and tools, but without cloud capability.
 
@@ -50,6 +50,9 @@ Copy the thumbnailer entry file `vds.thumbnailer` to
 Restart Gnome Files with `nautilus -q`.`
 
 ## Debugging
+
+If thumbnails do not appear for network folders, use `dconf-editor` and edit the thumbnail
+options so that thumbnails are 'always' shown, instead of 'local-only'.
 
 If you have problems with thumbnails not appearing, consider running nautilus
 in debug mode as follows:
