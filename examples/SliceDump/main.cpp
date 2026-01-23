@@ -145,7 +145,8 @@ int main(int argc, char **argv)
   if (!ends_with(file_name, ".bmp"))
     file_name = file_name + ".bmp";
 
-  std::unique_ptr<FILE, decltype(&fclose)> file(fopen(file_name.c_str(), "wb"), &fclose);
+  auto fclose_deleter = [](FILE* f) { if (f) fclose(f); };
+  std::unique_ptr<FILE, decltype(fclose_deleter)> file(fopen(file_name.c_str(), "wb"), fclose_deleter);
   if (!file)
   {
     fprintf(stderr, "Failed to open file: %s\n", file_name.c_str());
