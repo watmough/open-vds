@@ -1,0 +1,1308 @@
+#include "OpenDataStore.hpp"
+#include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <unistd.h>
+
+namespace {
+
+const char MAGIC[] = "HueDataStore";
+const int32_t VERSION = (1 << 16) | 0;  // Version 1.0
+const int32_t DEFAULT_FILENAME_LENGTH = 256;
+const int32_t DEFAULT_INDEX_PAGE_ENTRY_COUNT = 256;
+
+// Align value up to 8-byte boundary
+inline int64_t align8(int64_t value) {
+    return (value + 7) & ~7;
+}
+
+} // anonymous namespace
+
+// =============================================================================
+// BufferImpl - Simple buffer implementation
+// =============================================================================
+
+class BufferImpl : public OpenDataStore::Buffer {
+public:
+    std::vector<uint8_t> m_data;
+
+    BufferImpl() = default;
+    explicit BufferImpl(int size) : m_data(size) {}
+    BufferImpl(const void* data, int size) : m_data(size) {
+        if (data && size > 0) {
+            memcpy(m_data.data(), data, size);
+        }
+    }
+
+    const void* Data() const override { return m_data.data(); }
+    int Size() const override { return static_cast<int>(m_data.size()); }
+};
+
+// =============================================================================
+// OpenDataStoreImpl - Main implementation
+// =============================================================================
+
+class FileInterfaceImpl;
+
+class OpenDataStoreImpl : public OpenDataStore {
+public:
+    FILE* m_file = nullptr;
+    std::string m_fileName;
+    bool m_readOnly = true;
+    bool m_isOpen = false;
+    std::string m_errorMessage;
+
+    ODSDataStoreHeader m_header;
+    std::vector<uint8_t> m_fileTableData;
+
+    // Parsed file information
+    struct FileDescriptor {
+        std::string name;
+        ODSFileHeader header;
+        int tableIndex;  // Index in file table, -1 if not yet committed
+        bool removed = false;
+    };
+    std::vector<FileDescriptor> m_files;
+
+    // Free space tracking: offset -> size
+    std::map<int64_t, int64_t> m_freeExtents;
+    int64_t m_fileSize = 0;
+
+    // Track modified state
+    bool m_headerDirty = false;
+    bool m_fileTableDirty = false;
+
+    // Track committed file table for proper freeing
+    int64_t m_committedFileTableOffset = 0;
+    int64_t m_committedFileTableSize = 0;
+
+    OpenDataStoreImpl() {
+        memset(&m_header, 0, sizeof(m_header));
+    }
+
+    ~OpenDataStoreImpl() override {
+        if (m_file) {
+            fclose(m_file);
+            m_file = nullptr;
+        }
+    }
+
+    // =========================================================================
+    // File I/O helpers
+    // =========================================================================
+
+    bool readAt(int64_t offset, void* data, size_t size) {
+        if (!m_file || size == 0) return false;
+        if (fseeko(m_file, offset, SEEK_SET) != 0) return false;
+        return fread(data, 1, size, m_file) == size;
+    }
+
+    bool writeAt(int64_t offset, const void* data, size_t size) {
+        if (!m_file || m_readOnly || size == 0) return false;
+        if (fseeko(m_file, offset, SEEK_SET) != 0) return false;
+        bool ok = fwrite(data, 1, size, m_file) == size;
+        if (ok && offset + static_cast<int64_t>(size) > m_fileSize) {
+            m_fileSize = offset + size;
+        }
+        return ok;
+    }
+
+    int64_t getFileSize() {
+        if (!m_file) return 0;
+        int64_t pos = ftello(m_file);
+        fseeko(m_file, 0, SEEK_END);
+        int64_t size = ftello(m_file);
+        fseeko(m_file, pos, SEEK_SET);
+        return size;
+    }
+
+    // =========================================================================
+    // Extent allocation with coalescing and in-place growth support
+    // =========================================================================
+
+    // Coalesce a free extent with adjacent free extents
+    void coalesceExtent(int64_t offset, int64_t size) {
+        // Try to merge with previous extent
+        auto it = m_freeExtents.lower_bound(offset);
+        if (it != m_freeExtents.begin()) {
+            auto prev = std::prev(it);
+            // Check if previous extent ends exactly where this one starts
+            if (prev->first + prev->second == offset) {
+                offset = prev->first;
+                size += prev->second;
+                m_freeExtents.erase(prev);
+            }
+        }
+
+        // Try to merge with next extent
+        it = m_freeExtents.lower_bound(offset);
+        if (it != m_freeExtents.end() && offset + size == it->first) {
+            size += it->second;
+            m_freeExtents.erase(it);
+        }
+
+        // Insert the coalesced extent
+        m_freeExtents[offset] = size;
+    }
+
+    // Try to extend an existing allocation in-place
+    // Returns true if successful, false if must reallocate
+    bool tryExtendInPlace(int64_t currentOffset, int64_t currentSize, int64_t newSize) {
+        if (newSize <= currentSize) return true;  // Shrinking always works
+
+        currentSize = align8(currentSize);
+        newSize = align8(newSize);
+        int64_t needed = newSize - currentSize;
+        int64_t endOffset = currentOffset + currentSize;
+
+        // Check if there's a free extent immediately after this one
+        auto it = m_freeExtents.find(endOffset);
+        if (it != m_freeExtents.end() && it->second >= needed) {
+            // Can extend in place
+            int64_t remaining = it->second - needed;
+            m_freeExtents.erase(it);
+            if (remaining > 0) {
+                m_freeExtents[endOffset + needed] = remaining;
+            }
+            return true;
+        }
+
+        // Special case: if this extent is at end of file, just extend
+        if (endOffset == m_fileSize) {
+            m_fileSize += needed;
+            return true;
+        }
+
+        return false;
+    }
+
+    int64_t allocateExtent(int64_t size) {
+        size = align8(size);
+
+        // Use best-fit to minimize fragmentation
+        auto bestIt = m_freeExtents.end();
+        int64_t bestWaste = INT64_MAX;
+
+        for (auto it = m_freeExtents.begin(); it != m_freeExtents.end(); ++it) {
+            if (it->second >= size) {
+                int64_t waste = it->second - size;
+                if (waste < bestWaste) {
+                    bestWaste = waste;
+                    bestIt = it;
+                    if (waste == 0) break;  // Perfect fit
+                }
+            }
+        }
+
+        if (bestIt != m_freeExtents.end()) {
+            int64_t offset = bestIt->first;
+            int64_t remaining = bestIt->second - size;
+            m_freeExtents.erase(bestIt);
+            if (remaining > 0) {
+                m_freeExtents[offset + size] = remaining;
+            }
+            return offset;
+        }
+
+        // No suitable free extent, allocate at end
+        int64_t offset = m_fileSize;
+        m_fileSize += size;
+        return offset;
+    }
+
+    void freeExtent(int64_t offset, int64_t size) {
+        if (size <= 0 || offset <= 0) return;
+        size = align8(size);
+
+        // Coalesce with adjacent free extents
+        coalesceExtent(offset, size);
+    }
+
+    // =========================================================================
+    // File table operations
+    // =========================================================================
+
+    int fileTableEntrySize() const {
+        return sizeof(ODSFileHeader) + m_header.m_fileNameLength;
+    }
+
+    ODSFileHeader* getFileHeader(int index) {
+        if (index < 0 || index >= m_header.m_fileTableCount) return nullptr;
+        return reinterpret_cast<ODSFileHeader*>(m_fileTableData.data() + index * fileTableEntrySize());
+    }
+
+    const char* getFileNameInTable(int index) const {
+        if (index < 0 || index >= m_header.m_fileTableCount) return nullptr;
+        return reinterpret_cast<const char*>(m_fileTableData.data() + index * fileTableEntrySize() + sizeof(ODSFileHeader));
+    }
+
+    void parseFileTable() {
+        m_files.clear();
+        for (int i = 0; i < m_header.m_fileTableCount; i++) {
+            FileDescriptor desc;
+            desc.name = getFileNameInTable(i);
+            desc.header = *getFileHeader(i);
+            desc.tableIndex = i;
+            m_files.push_back(desc);
+        }
+    }
+
+    int findFileByName(const char* name) const {
+        for (size_t i = 0; i < m_files.size(); i++) {
+            if (!m_files[i].removed && m_files[i].name == name) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    void rebuildFileTable() {
+        // Count non-removed files
+        int count = 0;
+        for (const auto& f : m_files) {
+            if (!f.removed) count++;
+        }
+
+        // Calculate needed filename length
+        int32_t nameLen = m_header.m_fileNameLength;
+        for (const auto& f : m_files) {
+            if (!f.removed) {
+                int32_t len = align8(static_cast<int32_t>(f.name.size() + 1));
+                if (len > nameLen) nameLen = len;
+            }
+        }
+
+        int entrySize = sizeof(ODSFileHeader) + nameLen;
+        std::vector<uint8_t> newTable(count * entrySize, 0);
+
+        int idx = 0;
+        for (auto& f : m_files) {
+            if (f.removed) continue;
+
+            ODSFileHeader* hdr = reinterpret_cast<ODSFileHeader*>(newTable.data() + idx * entrySize);
+            *hdr = f.header;
+
+            char* nameDst = reinterpret_cast<char*>(newTable.data() + idx * entrySize + sizeof(ODSFileHeader));
+            strncpy(nameDst, f.name.c_str(), nameLen - 1);
+            nameDst[nameLen - 1] = '\0';
+
+            f.tableIndex = idx;
+            idx++;
+        }
+
+        // Remove removed files from vector
+        m_files.erase(std::remove_if(m_files.begin(), m_files.end(),
+            [](const FileDescriptor& f) { return f.removed; }), m_files.end());
+
+        m_header.m_fileTableCount = count;
+        m_header.m_fileNameLength = nameLen;
+        m_fileTableData = std::move(newTable);
+        m_fileTableDirty = true;
+        m_headerDirty = true;
+    }
+
+    // =========================================================================
+    // OpenDataStore interface implementation
+    // =========================================================================
+
+    const char* GetErrorMessage() override { return m_errorMessage.c_str(); }
+
+    bool BuildExtentAllocator() override {
+        // For simplicity, just track that file ends at current size
+        // Real implementation would scan all extents
+        m_freeExtents.clear();
+        return true;
+    }
+
+    bool EnableWriting() override {
+        if (!m_readOnly) return true;
+        if (!m_file) return false;
+
+        // Reopen with write access
+        fclose(m_file);
+        m_file = fopen(m_fileName.c_str(), "r+b");
+        if (!m_file) {
+            m_file = fopen(m_fileName.c_str(), "rb");
+            return false;
+        }
+        m_readOnly = false;
+        return true;
+    }
+
+    int GetFileCount() override {
+        int count = 0;
+        for (const auto& f : m_files) {
+            if (!f.removed) count++;
+        }
+        return count;
+    }
+
+    const char* GetFileName(int fileIndex) override {
+        int idx = 0;
+        for (const auto& f : m_files) {
+            if (f.removed) continue;
+            if (idx == fileIndex) return f.name.c_str();
+            idx++;
+        }
+        return nullptr;
+    }
+
+    int GetHeadRevisionNumber(int fileIndex) override {
+        int idx = 0;
+        for (const auto& f : m_files) {
+            if (f.removed) continue;
+            if (idx == fileIndex) return f.header.m_headRevisionNumber;
+            idx++;
+        }
+        return -1;
+    }
+
+    int GetFileType(int fileIndex) override {
+        int idx = 0;
+        for (const auto& f : m_files) {
+            if (f.removed) continue;
+            if (idx == fileIndex) return f.header.m_fileType;
+            idx++;
+        }
+        return -1;
+    }
+
+    int GetChunkMetadataLength(int fileIndex) override {
+        int idx = 0;
+        for (const auto& f : m_files) {
+            if (f.removed) continue;
+            if (idx == fileIndex) return f.header.m_chunkMetadataLength;
+            idx++;
+        }
+        return -1;
+    }
+
+    int GetFileMetadataLength(int fileIndex) override {
+        int idx = 0;
+        for (const auto& f : m_files) {
+            if (f.removed) continue;
+            if (idx == fileIndex) return f.header.m_fileMetadataLength;
+            idx++;
+        }
+        return -1;
+    }
+
+    FileInterface* OpenFile(const char* fileName) override;
+    FileInterface* OpenFileRevision(const char* fileName, int revision) override;
+    void CloseFile(FileInterface* fileInterface) override;
+    FileInterface* AddFile(const char* fileName, int chunkCount, int indexPageEntryCount,
+                          int fileType, int chunkMetadataLength, int fileMetadataLength,
+                          bool overwriteExisting) override;
+
+    bool RemoveFile(const char* fileName) override {
+        int idx = findFileByName(fileName);
+        if (idx < 0) return false;
+        m_files[idx].removed = true;
+        rebuildFileTable();
+        return true;
+    }
+
+    bool IsOpen() override { return m_isOpen; }
+    bool IsReadOnly() override { return m_readOnly; }
+
+    void CreateChunkDataIndexEntry(ODSIndexEntry& indexEntry, int size) override {
+        indexEntry.m_offset = allocateExtent(size);
+        indexEntry.m_length = size;
+        indexEntry.m_reserved = 0;
+    }
+
+    Buffer* ReadChunkData(const ODSIndexEntry& indexEntry) override {
+        if (indexEntry.m_length <= 0 || indexEntry.m_offset <= 0) return nullptr;
+        auto buf = new BufferImpl(indexEntry.m_length);
+        if (!readAt(indexEntry.m_offset, buf->m_data.data(), indexEntry.m_length)) {
+            delete buf;
+            return nullptr;
+        }
+        return buf;
+    }
+
+    bool WriteChunkData(const ODSIndexEntry& indexEntry, const void* data, int size) override {
+        if (m_readOnly || size <= 0) return false;
+        return writeAt(indexEntry.m_offset, data, size);
+    }
+
+    // Compact the data store by eliminating gaps between allocated regions
+    // This is a full compaction that reads and rewrites chunk data
+    int64_t Compact() override {
+        if (m_readOnly) return -1;
+
+        // First, find where all metadata ends so we don't overwrite it
+        int64_t metadataEnd = sizeof(ODSDataStoreHeader);
+
+        // Account for file table
+        if (m_header.m_fileTableOffset > 0) {
+            int64_t tableEnd = m_header.m_fileTableOffset + m_fileTableData.size();
+            if (tableEnd > metadataEnd) metadataEnd = tableEnd;
+        }
+
+        // Collect all chunk locations from all files, and track metadata regions
+        struct ChunkInfo {
+            int64_t oldOffset;
+            int32_t length;
+            int fileIdx;
+            int chunkIdx;
+        };
+        std::vector<ChunkInfo> chunks;
+
+        // Read all chunks from all files
+        for (size_t fi = 0; fi < m_files.size(); fi++) {
+            if (m_files[fi].removed) continue;
+
+            auto& fileDesc = m_files[fi];
+            int64_t pageDirOffset = fileDesc.header.m_headPageDirectoryOffset;
+            if (pageDirOffset <= 0) continue;
+
+            int indexPageEntryCount = fileDesc.header.m_indexPageEntryCount;
+            int chunkMetadataLength = fileDesc.header.m_chunkMetadataLength;
+            int fileMetadataLength = fileDesc.header.m_fileMetadataLength;
+            int chunkCount = fileDesc.header.m_headChunkCount;
+            int indexEntrySize = sizeof(ODSIndexEntry) + chunkMetadataLength;
+            int indexPageSize = indexPageEntryCount * indexEntrySize;
+
+            // Calculate number of index pages
+            int numIndexPages = (chunkCount + indexPageEntryCount - 1) / indexPageEntryCount;
+
+            // Track page directory as metadata
+            int64_t pageDirSize = sizeof(ODSPageDirectory) + fileMetadataLength + numIndexPages * sizeof(int64_t);
+            int64_t pageDirEnd = pageDirOffset + pageDirSize;
+            if (pageDirEnd > metadataEnd) metadataEnd = pageDirEnd;
+
+            // Read page directory to get index page offsets
+            ODSPageDirectory pageDir;
+            if (!readAt(pageDirOffset, &pageDir, sizeof(pageDir))) continue;
+
+            std::vector<int64_t> indexPageOffsets(numIndexPages);
+            int64_t offsetsLocation = pageDirOffset + sizeof(ODSPageDirectory) + fileMetadataLength;
+            if (!readAt(offsetsLocation, indexPageOffsets.data(), numIndexPages * sizeof(int64_t))) continue;
+
+            // Read each index page and collect chunk info
+            for (int page = 0; page < numIndexPages; page++) {
+                if (indexPageOffsets[page] <= 0) continue;
+
+                // Track index page as metadata
+                int64_t indexPageEnd = indexPageOffsets[page] + indexPageSize;
+                if (indexPageEnd > metadataEnd) metadataEnd = indexPageEnd;
+
+                std::vector<uint8_t> indexPageData(indexPageSize);
+                if (!readAt(indexPageOffsets[page], indexPageData.data(), indexPageSize)) continue;
+
+                int startChunk = page * indexPageEntryCount;
+                int endChunk = std::min(startChunk + indexPageEntryCount, chunkCount);
+
+                for (int chunk = startChunk; chunk < endChunk; chunk++) {
+                    int entryIdx = chunk - startChunk;
+                    ODSIndexEntry* entry = reinterpret_cast<ODSIndexEntry*>(
+                        indexPageData.data() + entryIdx * indexEntrySize);
+
+                    if (entry->m_offset > 0 && entry->m_length > 0) {
+                        ChunkInfo info;
+                        info.oldOffset = entry->m_offset;
+                        info.length = entry->m_length;
+                        info.fileIdx = static_cast<int>(fi);
+                        info.chunkIdx = chunk;
+                        chunks.push_back(info);
+                    }
+                }
+            }
+        }
+
+        if (chunks.empty()) return 0;
+
+        // Sort chunks by their current offset
+        std::sort(chunks.begin(), chunks.end(),
+                  [](const ChunkInfo& a, const ChunkInfo& b) {
+                      return a.oldOffset < b.oldOffset;
+                  });
+
+        // Only compact chunks that are after metadataEnd (leaving pre-metadata chunks in place)
+        // This preserves the efficient layout where chunks exist before metadata
+        std::vector<int64_t> newOffsets(chunks.size());
+
+        // First, keep chunks before metadataEnd in their current positions
+        size_t firstMovableChunk = 0;
+        for (size_t i = 0; i < chunks.size(); i++) {
+            if (chunks[i].oldOffset < metadataEnd) {
+                newOffsets[i] = chunks[i].oldOffset;  // Keep in place
+                firstMovableChunk = i + 1;
+            }
+        }
+
+        // Calculate new compact positions for chunks after metadataEnd
+        // Find where to start compacting - right after last pre-metadata chunk or after metadata
+        int64_t compactStart = metadataEnd;
+        for (size_t i = 0; i < firstMovableChunk; i++) {
+            int64_t chunkEnd = chunks[i].oldOffset + align8(chunks[i].length);
+            if (chunkEnd > compactStart) compactStart = chunkEnd;
+        }
+        compactStart = align8(compactStart + 8);
+
+        int64_t currentOffset = compactStart;
+        for (size_t i = firstMovableChunk; i < chunks.size(); i++) {
+            newOffsets[i] = currentOffset;
+            currentOffset += align8(chunks[i].length);
+        }
+
+        int64_t oldFileSize = m_fileSize;
+        int64_t newFileSize = currentOffset;
+
+        // If no space would be saved, skip
+        if (newFileSize >= oldFileSize) return 0;
+
+        // Read all movable chunk data into memory first to avoid overlap issues
+        std::vector<std::vector<uint8_t>> chunkData(chunks.size());
+        for (size_t i = firstMovableChunk; i < chunks.size(); i++) {
+            if (newOffsets[i] != chunks[i].oldOffset) {
+                chunkData[i].resize(chunks[i].length);
+                if (!readAt(chunks[i].oldOffset, chunkData[i].data(), chunks[i].length)) {
+                    return -1;  // Error
+                }
+            }
+        }
+
+        // Write movable chunks to new positions
+        for (size_t i = firstMovableChunk; i < chunks.size(); i++) {
+            if (newOffsets[i] != chunks[i].oldOffset) {
+                if (!writeAt(newOffsets[i], chunkData[i].data(), chunks[i].length)) {
+                    return -1;  // Error
+                }
+            }
+        }
+
+        // Update index entries only for moved chunks
+        for (size_t i = firstMovableChunk; i < chunks.size(); i++) {
+            if (newOffsets[i] == chunks[i].oldOffset) continue;  // Not moved
+
+            auto& fileDesc = m_files[chunks[i].fileIdx];
+            int indexPageEntryCount = fileDesc.header.m_indexPageEntryCount;
+            int chunkMetadataLength = fileDesc.header.m_chunkMetadataLength;
+            int fileMetadataLength = fileDesc.header.m_fileMetadataLength;
+            int indexEntrySize = sizeof(ODSIndexEntry) + chunkMetadataLength;
+
+            int pageIdx = chunks[i].chunkIdx / indexPageEntryCount;
+            int entryIdx = chunks[i].chunkIdx % indexPageEntryCount;
+
+            // Get index page offset
+            int64_t pageDirOffset = fileDesc.header.m_headPageDirectoryOffset;
+            int64_t offsetsLocation = pageDirOffset + sizeof(ODSPageDirectory) + fileMetadataLength;
+            int64_t indexPageOffset;
+            if (!readAt(offsetsLocation + pageIdx * sizeof(int64_t), &indexPageOffset, sizeof(int64_t))) continue;
+
+            // Update the entry offset in the index page
+            int64_t entryLocation = indexPageOffset + entryIdx * indexEntrySize;
+            ODSIndexEntry entry;
+            if (!readAt(entryLocation, &entry, sizeof(entry))) continue;
+            entry.m_offset = newOffsets[i];
+            if (!writeAt(entryLocation, &entry, sizeof(entry))) continue;
+        }
+
+        // Clear free extents and set new file size
+        m_freeExtents.clear();
+        m_fileSize = newFileSize;
+
+        // Truncate the file
+        if (ftruncate(fileno(m_file), newFileSize) != 0) {
+            // Truncation failed, but data is still valid
+        }
+
+        fflush(m_file);
+
+        return oldFileSize - newFileSize;
+    }
+
+    bool commitHeader() {
+        return writeAt(0, &m_header, sizeof(m_header));
+    }
+
+    bool commitFileTable() {
+        if (m_fileTableData.empty()) return true;
+
+        // Free old file table location if it exists (use tracked committed values)
+        if (m_committedFileTableOffset > 0 && m_committedFileTableSize > 0) {
+            freeExtent(m_committedFileTableOffset, m_committedFileTableSize);
+        }
+
+        // Allocate new location for file table
+        int64_t tableSize = m_fileTableData.size();
+        int64_t newOffset = allocateExtent(tableSize);
+        m_header.m_fileTableOffset = newOffset;
+
+        if (!writeAt(newOffset, m_fileTableData.data(), tableSize)) {
+            return false;
+        }
+
+        // Update committed tracking
+        m_committedFileTableOffset = newOffset;
+        m_committedFileTableSize = tableSize;
+
+        m_fileTableDirty = false;
+        return true;
+    }
+};
+
+// =============================================================================
+// FileInterfaceImpl
+// =============================================================================
+
+class FileInterfaceImpl : public OpenDataStore::FileInterface {
+public:
+    OpenDataStoreImpl* m_store;
+    int m_fileIndex;  // Index into m_store->m_files
+    std::string m_fileName;
+
+    ODSPageDirectory m_pageDir;
+    int m_chunkCount;
+    int m_revisionNumber;
+    int m_indexPageEntryCount;
+    int m_fileType;
+    int m_chunkMetadataLength;
+    int m_fileMetadataLength;
+
+    std::vector<uint8_t> m_fileMetadata;
+    std::vector<int64_t> m_indexPageOffsets;
+
+    // Cache of loaded index pages
+    std::map<int, std::vector<uint8_t>> m_indexPages;
+    std::set<int> m_dirtyPages;
+
+    int64_t m_pageDirOffset = 0;
+    bool m_pageDirDirty = false;
+    bool m_newFile = false;
+
+    FileInterfaceImpl(OpenDataStoreImpl* store, int fileIndex)
+        : m_store(store), m_fileIndex(fileIndex) {
+        memset(&m_pageDir, 0, sizeof(m_pageDir));
+    }
+
+    int indexPageSize() const {
+        return m_indexPageEntryCount * (sizeof(ODSIndexEntry) + m_chunkMetadataLength);
+    }
+
+    int indexPageCount() const {
+        if (m_chunkCount == 0 || m_indexPageEntryCount == 0) return 0;
+        return (m_chunkCount + m_indexPageEntryCount - 1) / m_indexPageEntryCount;
+    }
+
+    int pageDirTotalSize() const {
+        return sizeof(ODSPageDirectory) + m_fileMetadataLength + indexPageCount() * sizeof(int64_t);
+    }
+
+    bool loadPageDirectory(int64_t offset) {
+        m_pageDirOffset = offset;
+
+        if (offset == 0) {
+            // New file with no page directory yet
+            memset(&m_pageDir, 0, sizeof(m_pageDir));
+            m_fileMetadata.resize(m_fileMetadataLength, 0);
+            m_indexPageOffsets.resize(indexPageCount(), 0);
+            return true;
+        }
+
+        // Read page directory header
+        if (!m_store->readAt(offset, &m_pageDir, sizeof(m_pageDir))) {
+            return false;
+        }
+
+        // Read file metadata
+        if (m_fileMetadataLength > 0) {
+            m_fileMetadata.resize(m_fileMetadataLength);
+            if (!m_store->readAt(offset + sizeof(ODSPageDirectory),
+                                 m_fileMetadata.data(), m_fileMetadataLength)) {
+                return false;
+            }
+        }
+
+        // Read index page offsets
+        int pageCount = indexPageCount();
+        if (pageCount > 0) {
+            m_indexPageOffsets.resize(pageCount);
+            if (!m_store->readAt(offset + sizeof(ODSPageDirectory) + m_fileMetadataLength,
+                                 m_indexPageOffsets.data(), pageCount * sizeof(int64_t))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    std::vector<uint8_t>& getIndexPage(int pageIndex) {
+        auto it = m_indexPages.find(pageIndex);
+        if (it != m_indexPages.end()) {
+            return it->second;
+        }
+
+        // Load or create page
+        std::vector<uint8_t>& page = m_indexPages[pageIndex];
+        page.resize(indexPageSize(), 0);
+
+        if (pageIndex < static_cast<int>(m_indexPageOffsets.size()) &&
+            m_indexPageOffsets[pageIndex] != 0) {
+            m_store->readAt(m_indexPageOffsets[pageIndex], page.data(), page.size());
+        }
+
+        return page;
+    }
+
+    ODSIndexEntry* getIndexEntry(int chunk) {
+        if (chunk < 0 || chunk >= m_chunkCount) return nullptr;
+        int pageIdx = chunk / m_indexPageEntryCount;
+        int entryIdx = chunk % m_indexPageEntryCount;
+
+        std::vector<uint8_t>& page = getIndexPage(pageIdx);
+        int entrySize = sizeof(ODSIndexEntry) + m_chunkMetadataLength;
+        return reinterpret_cast<ODSIndexEntry*>(page.data() + entryIdx * entrySize);
+    }
+
+    void* getChunkMetadata(int chunk) {
+        if (m_chunkMetadataLength == 0) return nullptr;
+        int pageIdx = chunk / m_indexPageEntryCount;
+        int entryIdx = chunk % m_indexPageEntryCount;
+
+        std::vector<uint8_t>& page = getIndexPage(pageIdx);
+        int entrySize = sizeof(ODSIndexEntry) + m_chunkMetadataLength;
+        return page.data() + entryIdx * entrySize + sizeof(ODSIndexEntry);
+    }
+
+    void markPageDirty(int chunk) {
+        int pageIdx = chunk / m_indexPageEntryCount;
+        m_dirtyPages.insert(pageIdx);
+    }
+
+    // =========================================================================
+    // FileInterface implementation
+    // =========================================================================
+
+    const char* GetFileName() override { return m_fileName.c_str(); }
+    int GetRevisionNumber() override { return m_revisionNumber; }
+    int GetFileType() override { return m_fileType; }
+    int GetChunkMetadataLength() override { return m_chunkMetadataLength; }
+    int GetFileMetadataLength() override { return m_fileMetadataLength; }
+    int GetRevision() override { return m_revisionNumber; }
+    int GetChunkCount() override { return m_chunkCount; }
+
+    int GetIndexPageIndexForChunk(int chunk) const override {
+        return chunk / m_indexPageEntryCount;
+    }
+
+    int GetIndexEntryIndexForChunk(int chunk) const override {
+        return chunk % m_indexPageEntryCount;
+    }
+
+    OpenDataStore::Buffer* ReadChunk(int chunk, void* metadata) override {
+        OpenDataStore::Buffer* buf = ReadChunkData(chunk);
+        if (buf && metadata && m_chunkMetadataLength > 0) {
+            ReadChunkMetadata(chunk, metadata);
+        }
+        return buf;
+    }
+
+    OpenDataStore::Buffer* ReadChunkData(int chunk) override {
+        ODSIndexEntry* entry = getIndexEntry(chunk);
+        if (!entry || entry->m_length <= 0 || entry->m_offset <= 0) {
+            return nullptr;
+        }
+
+        auto buf = new BufferImpl(entry->m_length);
+        if (!m_store->readAt(entry->m_offset, buf->m_data.data(), entry->m_length)) {
+            delete buf;
+            return nullptr;
+        }
+        return buf;
+    }
+
+    bool ReadChunkMetadata(int chunk, void* metadata) override {
+        if (!metadata || m_chunkMetadataLength == 0) return false;
+        void* src = getChunkMetadata(chunk);
+        if (!src) return false;
+        memcpy(metadata, src, m_chunkMetadataLength);
+        return true;
+    }
+
+    bool ReadIndexEntry(int chunk, ODSIndexEntry* indexEntry, void* metadata) override {
+        ODSIndexEntry* entry = getIndexEntry(chunk);
+        if (!entry) return false;
+        *indexEntry = *entry;
+        if (metadata && m_chunkMetadataLength > 0) {
+            ReadChunkMetadata(chunk, metadata);
+        }
+        return true;
+    }
+
+    bool WriteChunk(int chunk, const void* data, int size, const void* metadata,
+                    int* oldSize, void* oldMetadata) override {
+        if (m_store->m_readOnly) return false;
+
+        // Get old values if requested
+        ODSIndexEntry* entry = getIndexEntry(chunk);
+        if (!entry) return false;
+
+        int64_t oldOffset = entry->m_offset;
+        int oldLength = entry->m_length;
+
+        if (oldSize) *oldSize = oldLength;
+        if (oldMetadata && m_chunkMetadataLength > 0) {
+            memcpy(oldMetadata, getChunkMetadata(chunk), m_chunkMetadataLength);
+        }
+
+        int64_t offset;
+
+        // Try to extend in place if we have existing data and new size is larger
+        if (oldOffset > 0 && oldLength > 0 && size > oldLength) {
+            if (m_store->tryExtendInPlace(oldOffset, oldLength, size)) {
+                // Extended in place - just write the data
+                offset = oldOffset;
+            } else {
+                // Can't extend - free old extent and allocate new
+                m_store->freeExtent(oldOffset, oldLength);
+                offset = m_store->allocateExtent(size);
+            }
+        } else if (oldOffset > 0 && oldLength > 0) {
+            // New size is smaller or equal - can reuse same location
+            // Free the unused portion if shrinking significantly
+            if (oldLength > size + 64) {  // Only bother if saving > 64 bytes
+                m_store->freeExtent(oldOffset + align8(size), oldLength - align8(size));
+            }
+            offset = oldOffset;
+        } else {
+            // No old data, just allocate
+            offset = m_store->allocateExtent(size);
+        }
+
+        if (!m_store->writeAt(offset, data, size)) {
+            return false;
+        }
+
+        // Update index entry
+        entry->m_offset = offset;
+        entry->m_length = size;
+
+        // Update metadata
+        if (metadata && m_chunkMetadataLength > 0) {
+            memcpy(getChunkMetadata(chunk), metadata, m_chunkMetadataLength);
+        }
+
+        markPageDirty(chunk);
+        return true;
+    }
+
+    bool WriteChunkData(int chunk, const void* data, int size) override {
+        if (m_store->m_readOnly) return false;
+
+        ODSIndexEntry* entry = getIndexEntry(chunk);
+        if (!entry) return false;
+
+        int64_t oldOffset = entry->m_offset;
+        int oldLength = entry->m_length;
+        int64_t offset;
+
+        // Try to extend in place if we have existing data and new size is larger
+        if (oldOffset > 0 && oldLength > 0 && size > oldLength) {
+            if (m_store->tryExtendInPlace(oldOffset, oldLength, size)) {
+                // Extended in place - just write the data
+                offset = oldOffset;
+            } else {
+                // Can't extend - free old extent and allocate new
+                m_store->freeExtent(oldOffset, oldLength);
+                offset = m_store->allocateExtent(size);
+            }
+        } else if (oldOffset > 0 && oldLength > 0) {
+            // New size is smaller or equal - can reuse same location
+            // Free the unused portion if shrinking significantly
+            if (oldLength > size + 64) {  // Only bother if saving > 64 bytes
+                m_store->freeExtent(oldOffset + align8(size), oldLength - align8(size));
+            }
+            offset = oldOffset;
+        } else {
+            // No old data, just allocate
+            offset = m_store->allocateExtent(size);
+        }
+
+        if (!m_store->writeAt(offset, data, size)) {
+            return false;
+        }
+
+        entry->m_offset = offset;
+        entry->m_length = size;
+        markPageDirty(chunk);
+        return true;
+    }
+
+    bool WriteChunkMetadata(int chunk, const void* metadata, int* oldSize, void* oldMetadata) override {
+        if (m_store->m_readOnly || m_chunkMetadataLength == 0) return false;
+
+        ODSIndexEntry* entry = getIndexEntry(chunk);
+        if (!entry) return false;
+
+        if (oldSize) *oldSize = entry->m_length;
+        if (oldMetadata) {
+            memcpy(oldMetadata, getChunkMetadata(chunk), m_chunkMetadataLength);
+        }
+
+        memcpy(getChunkMetadata(chunk), metadata, m_chunkMetadataLength);
+        markPageDirty(chunk);
+        return true;
+    }
+
+    bool WriteIndexEntry(int chunk, const ODSIndexEntry& indexEntry, const void* metadata,
+                         int* oldSize, void* oldMetadata) override {
+        if (m_store->m_readOnly) return false;
+
+        ODSIndexEntry* entry = getIndexEntry(chunk);
+        if (!entry) return false;
+
+        if (oldSize) *oldSize = entry->m_length;
+        if (oldMetadata && m_chunkMetadataLength > 0) {
+            memcpy(oldMetadata, getChunkMetadata(chunk), m_chunkMetadataLength);
+        }
+
+        *entry = indexEntry;
+        if (metadata && m_chunkMetadataLength > 0) {
+            memcpy(getChunkMetadata(chunk), metadata, m_chunkMetadataLength);
+        }
+
+        markPageDirty(chunk);
+        return true;
+    }
+
+    void ReadFileMetadata(void* fileMetadata) override {
+        if (fileMetadata && m_fileMetadataLength > 0 && !m_fileMetadata.empty()) {
+            memcpy(fileMetadata, m_fileMetadata.data(), m_fileMetadataLength);
+        }
+    }
+
+    void WriteFileMetadata(const void* fileMetadata) override {
+        if (fileMetadata && m_fileMetadataLength > 0) {
+            if (m_fileMetadata.size() < static_cast<size_t>(m_fileMetadataLength)) {
+                m_fileMetadata.resize(m_fileMetadataLength);
+            }
+            memcpy(m_fileMetadata.data(), fileMetadata, m_fileMetadataLength);
+            m_pageDirDirty = true;
+        }
+    }
+
+    void Rename(const char* fileName) override {
+        m_fileName = fileName;
+        if (m_fileIndex >= 0 && m_fileIndex < static_cast<int>(m_store->m_files.size())) {
+            m_store->m_files[m_fileIndex].name = fileName;
+            m_store->m_fileTableDirty = true;
+        }
+    }
+
+    bool Commit() override {
+        if (m_store->m_readOnly) return false;
+
+        // Write dirty index pages
+        for (int pageIdx : m_dirtyPages) {
+            auto it = m_indexPages.find(pageIdx);
+            if (it == m_indexPages.end()) continue;
+
+            // Ensure we have enough page offset slots
+            while (static_cast<int>(m_indexPageOffsets.size()) <= pageIdx) {
+                m_indexPageOffsets.push_back(0);
+            }
+
+            // Free old index page location if it exists
+            int64_t oldOffset = m_indexPageOffsets[pageIdx];
+            if (oldOffset > 0) {
+                m_store->freeExtent(oldOffset, indexPageSize());
+            }
+
+            // Allocate new location for index page
+            int64_t offset = m_store->allocateExtent(indexPageSize());
+            if (!m_store->writeAt(offset, it->second.data(), it->second.size())) {
+                return false;
+            }
+            m_indexPageOffsets[pageIdx] = offset;
+        }
+        m_dirtyPages.clear();
+
+        // Free old page directory if it exists
+        int64_t oldPageDirOffset = m_pageDirOffset;
+        int64_t oldPageDirSize = (oldPageDirOffset > 0) ? pageDirTotalSize() : 0;
+
+        // Write page directory
+        int64_t pageDirSize = pageDirTotalSize();
+        int64_t newPageDirOffset = m_store->allocateExtent(pageDirSize);
+
+        // Update page directory with previous revision info
+        m_pageDir.m_previousPageDirectoryOffset = m_pageDirOffset;
+        m_pageDir.m_previousChunkCount = m_chunkCount;
+        m_pageDir.m_previousRevisionNumber = m_revisionNumber;
+
+        if (!m_store->writeAt(newPageDirOffset, &m_pageDir, sizeof(m_pageDir))) {
+            return false;
+        }
+
+        if (m_fileMetadataLength > 0 && !m_fileMetadata.empty()) {
+            if (!m_store->writeAt(newPageDirOffset + sizeof(ODSPageDirectory),
+                                  m_fileMetadata.data(), m_fileMetadataLength)) {
+                return false;
+            }
+        }
+
+        if (!m_indexPageOffsets.empty()) {
+            if (!m_store->writeAt(newPageDirOffset + sizeof(ODSPageDirectory) + m_fileMetadataLength,
+                                  m_indexPageOffsets.data(), m_indexPageOffsets.size() * sizeof(int64_t))) {
+                return false;
+            }
+        }
+
+        m_pageDirOffset = newPageDirOffset;
+        m_pageDirDirty = false;
+
+        // Free old page directory now that new one is written
+        if (oldPageDirOffset > 0 && oldPageDirSize > 0) {
+            m_store->freeExtent(oldPageDirOffset, oldPageDirSize);
+        }
+
+        // Increment revision
+        m_revisionNumber++;
+
+        // Update file header in store
+        if (m_fileIndex >= 0 && m_fileIndex < static_cast<int>(m_store->m_files.size())) {
+            auto& desc = m_store->m_files[m_fileIndex];
+            desc.header.m_headPageDirectoryOffset = newPageDirOffset;
+            desc.header.m_headChunkCount = m_chunkCount;
+            desc.header.m_headRevisionNumber = m_revisionNumber;
+
+            // Update in file table data
+            if (desc.tableIndex >= 0) {
+                ODSFileHeader* hdr = m_store->getFileHeader(desc.tableIndex);
+                if (hdr) {
+                    *hdr = desc.header;
+                }
+            }
+            m_store->m_fileTableDirty = true;
+        }
+
+        // Commit file table and header
+        if (!m_store->commitFileTable()) return false;
+        m_store->m_headerDirty = true;
+        if (!m_store->commitHeader()) return false;
+
+        fflush(m_store->m_file);
+        return true;
+    }
+};
+
+// =============================================================================
+// OpenDataStoreImpl methods that use FileInterfaceImpl
+// =============================================================================
+
+OpenDataStore::FileInterface* OpenDataStoreImpl::OpenFile(const char* fileName) {
+    int idx = findFileByName(fileName);
+    if (idx < 0) return nullptr;
+
+    auto& desc = m_files[idx];
+    auto fi = new FileInterfaceImpl(this, idx);
+
+    fi->m_fileName = desc.name;
+    fi->m_chunkCount = desc.header.m_headChunkCount;
+    fi->m_revisionNumber = desc.header.m_headRevisionNumber;
+    fi->m_indexPageEntryCount = desc.header.m_indexPageEntryCount;
+    fi->m_fileType = desc.header.m_fileType;
+    fi->m_chunkMetadataLength = desc.header.m_chunkMetadataLength;
+    fi->m_fileMetadataLength = desc.header.m_fileMetadataLength;
+
+    if (!fi->loadPageDirectory(desc.header.m_headPageDirectoryOffset)) {
+        delete fi;
+        return nullptr;
+    }
+
+    return fi;
+}
+
+OpenDataStore::FileInterface* OpenDataStoreImpl::OpenFileRevision(const char* fileName, int revision) {
+    int idx = findFileByName(fileName);
+    if (idx < 0) return nullptr;
+
+    auto& desc = m_files[idx];
+
+    // Walk revision chain to find requested revision
+    int64_t pageDirOffset = desc.header.m_headPageDirectoryOffset;
+    int currentRev = desc.header.m_headRevisionNumber;
+    int chunkCount = desc.header.m_headChunkCount;
+
+    while (currentRev > revision && pageDirOffset != 0) {
+        ODSPageDirectory pd;
+        if (!readAt(pageDirOffset, &pd, sizeof(pd))) {
+            return nullptr;
+        }
+        pageDirOffset = pd.m_previousPageDirectoryOffset;
+        currentRev = pd.m_previousRevisionNumber;
+        chunkCount = pd.m_previousChunkCount;
+    }
+
+    if (currentRev != revision) {
+        return nullptr;  // Revision not found
+    }
+
+    auto fi = new FileInterfaceImpl(this, idx);
+    fi->m_fileName = desc.name;
+    fi->m_chunkCount = chunkCount;
+    fi->m_revisionNumber = revision;
+    fi->m_indexPageEntryCount = desc.header.m_indexPageEntryCount;
+    fi->m_fileType = desc.header.m_fileType;
+    fi->m_chunkMetadataLength = desc.header.m_chunkMetadataLength;
+    fi->m_fileMetadataLength = desc.header.m_fileMetadataLength;
+
+    if (!fi->loadPageDirectory(pageDirOffset)) {
+        delete fi;
+        return nullptr;
+    }
+
+    return fi;
+}
+
+void OpenDataStoreImpl::CloseFile(FileInterface* fileInterface) {
+    delete fileInterface;
+}
+
+OpenDataStore::FileInterface* OpenDataStoreImpl::AddFile(
+    const char* fileName, int chunkCount, int indexPageEntryCount,
+    int fileType, int chunkMetadataLength, int fileMetadataLength,
+    bool overwriteExisting) {
+
+    if (m_readOnly) return nullptr;
+
+    // Check if file exists
+    int existingIdx = findFileByName(fileName);
+    if (existingIdx >= 0) {
+        if (!overwriteExisting) return nullptr;
+        m_files[existingIdx].removed = true;
+    }
+
+    // Create new file descriptor
+    FileDescriptor desc;
+    desc.name = fileName;
+    desc.tableIndex = -1;  // Not in table yet
+    desc.header.m_headPageDirectoryOffset = 0;
+    desc.header.m_headChunkCount = chunkCount;
+    desc.header.m_headRevisionNumber = 0;
+    desc.header.m_indexPageEntryCount = indexPageEntryCount > 0 ? indexPageEntryCount : DEFAULT_INDEX_PAGE_ENTRY_COUNT;
+    desc.header.m_fileType = fileType;
+    desc.header.m_chunkMetadataLength = chunkMetadataLength;
+    desc.header.m_fileMetadataLength = fileMetadataLength;
+
+    m_files.push_back(desc);
+    int fileIndex = static_cast<int>(m_files.size()) - 1;
+
+    // Create FileInterface
+    auto fi = new FileInterfaceImpl(this, fileIndex);
+    fi->m_fileName = fileName;
+    fi->m_chunkCount = chunkCount;
+    fi->m_revisionNumber = 0;
+    fi->m_indexPageEntryCount = desc.header.m_indexPageEntryCount;
+    fi->m_fileType = fileType;
+    fi->m_chunkMetadataLength = chunkMetadataLength;
+    fi->m_fileMetadataLength = fileMetadataLength;
+    fi->m_newFile = true;
+
+    // Initialize empty page directory data
+    fi->m_fileMetadata.resize(fileMetadataLength, 0);
+    fi->m_indexPageOffsets.resize(fi->indexPageCount(), 0);
+
+    // Rebuild file table to include new file
+    rebuildFileTable();
+
+    return fi;
+}
+
+// =============================================================================
+// Static factory methods
+// =============================================================================
+
+OpenDataStore* OpenDataStore::Open(const char* fileName) {
+    auto store = new OpenDataStoreImpl();
+    store->m_fileName = fileName;
+
+    store->m_file = fopen(fileName, "rb");
+    if (!store->m_file) {
+        store->m_errorMessage = "Failed to open file";
+        store->m_isOpen = false;
+        return store;
+    }
+
+    store->m_readOnly = true;
+    store->m_fileSize = store->getFileSize();
+
+    // Read header
+    if (!store->readAt(0, &store->m_header, sizeof(store->m_header))) {
+        store->m_errorMessage = "Failed to read header";
+        store->m_isOpen = false;
+        return store;
+    }
+
+    // Verify magic
+    if (memcmp(store->m_header.m_magic, MAGIC, 12) != 0) {
+        store->m_errorMessage = "Invalid file magic";
+        store->m_isOpen = false;
+        return store;
+    }
+
+    // Read file table
+    if (store->m_header.m_fileTableCount > 0 && store->m_header.m_fileTableOffset > 0) {
+        int tableSize = store->m_header.m_fileTableCount * store->fileTableEntrySize();
+        store->m_fileTableData.resize(tableSize);
+        if (!store->readAt(store->m_header.m_fileTableOffset,
+                          store->m_fileTableData.data(), tableSize)) {
+            store->m_errorMessage = "Failed to read file table";
+            store->m_isOpen = false;
+            return store;
+        }
+        store->parseFileTable();
+
+        // Track the committed file table for proper freeing on updates
+        store->m_committedFileTableOffset = store->m_header.m_fileTableOffset;
+        store->m_committedFileTableSize = tableSize;
+    }
+
+    store->m_isOpen = true;
+    return store;
+}
+
+OpenDataStore* OpenDataStore::CreateNew(const char* fileName, bool overwriteExisting) {
+    auto store = new OpenDataStoreImpl();
+    store->m_fileName = fileName;
+
+    const char* mode = overwriteExisting ? "w+b" : "w+bx";
+    store->m_file = fopen(fileName, mode);
+    if (!store->m_file && !overwriteExisting) {
+        // Try with overwrite if exclusive create failed
+        store->m_file = fopen(fileName, "w+b");
+    }
+
+    if (!store->m_file) {
+        store->m_errorMessage = "Failed to create file";
+        store->m_isOpen = false;
+        return store;
+    }
+
+    store->m_readOnly = false;
+    store->m_isOpen = true;
+
+    // Initialize header
+    memcpy(store->m_header.m_magic, MAGIC, 12);
+    store->m_header.m_version = VERSION;
+    store->m_header.m_fileTableOffset = 0;
+    store->m_header.m_fileTableCount = 0;
+    store->m_header.m_fileNameLength = DEFAULT_FILENAME_LENGTH;
+
+    // Write header
+    store->m_fileSize = sizeof(ODSDataStoreHeader);
+    store->writeAt(0, &store->m_header, sizeof(store->m_header));
+
+    return store;
+}
+
+void OpenDataStore::Close(OpenDataStore* dataStore) {
+    delete dataStore;
+}
+
+void OpenDataStore::ReleaseBuffer(Buffer* buffer) {
+    delete buffer;
+}
