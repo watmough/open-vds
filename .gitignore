@@ -31,3 +31,6 @@ pytest.ini
 /**/ovdspy
 .venv*/
 py*env/
+tests/VDS/SEGY/TeapotDome/filt_mig.sgy
+tests/VDS/SEGY/bonaventure_subset.segy
+example-vds-data

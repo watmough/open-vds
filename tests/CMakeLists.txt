@@ -27,7 +27,7 @@ string(REPLACE ";" "\\\\;" TEST_CONNECTION_ESCAPED "${TEST_CONNECTION}")
 
 function(add_test_executable name)
   add_executable(${name} ${ARGN})
-  target_link_libraries(${name} PRIVATE openvds_objects hue_bds_objects gtest gtest_main)
+  target_link_libraries(${name} PRIVATE openvds_objects ods_objects gtest gtest_main)
   addSystemHeadersToTarget(${name} "${include_3rdparty}")
   target_compile_definitions(${name} PRIVATE openvds_EXPORTS)
   add_dependencies(${name} TestRootTarget)

@@ -18,7 +18,7 @@
 #ifndef VOLUMEDATASTOREVDSFILE_H
 #define VOLUMEDATASTOREVDSFILE_H
 
-#include <BulkDataStore/HueBulkDataStore.h>
+#include <OpenDataStore/OpenDataStore.hpp>
 #include <BulkDataStore/HueBulkDataStoreFileTypes.h>
 
 #include "VDS.h"
@@ -34,13 +34,13 @@ class VolumeDataStoreVDSFile : public VolumeDataStore
 {
   struct LayerFile
   {
-    HueBulkDataStore::FileInterface *fileInterface;
+    OpenDataStore::FileInterface *fileInterface;
     VDSLayerMetadataWaveletAdaptive layerMetadata;
     bool layerChunksWaveletAdaptive;
     bool dirty;
 
     LayerFile() = default;
-    LayerFile(HueBulkDataStore::FileInterface *fileInterface, VDSLayerMetadataWaveletAdaptive const &layerMetadata, bool layerChunksWaveletAdaptive, bool dirty)
+    LayerFile(OpenDataStore::FileInterface *fileInterface, VDSLayerMetadataWaveletAdaptive const &layerMetadata, bool layerChunksWaveletAdaptive, bool dirty)
       : fileInterface(fileInterface), layerMetadata(layerMetadata), layerChunksWaveletAdaptive(layerChunksWaveletAdaptive), dirty(dirty)
     {}
   };
@@ -50,7 +50,7 @@ class VolumeDataStoreVDSFile : public VolumeDataStore
   bool m_isVDSObjectFilePresent;
   bool m_isVolumeDataLayoutFilePresent;
   std::map<std::string, LayerFile> m_layerFiles;
-  std::unique_ptr<HueBulkDataStore, void (*)(HueBulkDataStore *)> m_dataStore;
+  std::unique_ptr<OpenDataStore, void (*)(OpenDataStore *)> m_dataStore;
 
   std::vector<uint8_t> ParseVDSObject(std::string const &parseString);
 

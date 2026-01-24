@@ -1,5 +1,6 @@
 #include "VDSObjectParser.h"
 #include <Base64/Base64.h>
+#include <cassert>
 #include <sstream>
 #include <locale.h>
 #include <stdint.h>
@@ -57,10 +58,10 @@ bool ParseVDS(Parser **parser)
 
 bool Parser::ReadSerializedVDSObject(const char *vdsFileName)
 {
-  HueBulkDataStore * dataStore = nullptr;
-  HueBulkDataStore::FileInterface *fileInterface = nullptr;
+  DataStoreType * dataStore = nullptr;
+  DataStoreType::FileInterface *fileInterface = nullptr;
 
-  dataStore = HueBulkDataStore::Open(vdsFileName);
+  dataStore = DataStoreType::Open(vdsFileName);
   if (dataStore == nullptr)
   {
     return false;
@@ -69,7 +70,7 @@ bool Parser::ReadSerializedVDSObject(const char *vdsFileName)
   fileInterface = dataStore->OpenFile("VDSObject");
   if (fileInterface == NULL)
   {
-    HueBulkDataStore::Close(dataStore);
+    DataStoreType::Close(dataStore);
     return false;
   }
 
@@ -77,13 +78,13 @@ bool Parser::ReadSerializedVDSObject(const char *vdsFileName)
 
   if (chunkBuffer == nullptr || chunkBuffer->Size() == 0)
   {
-    HueBulkDataStore::Close(dataStore);
+    DataStoreType::Close(dataStore);
     return false;
   }
 
   if (dataStore != nullptr)
   {
-    HueBulkDataStore::Close(dataStore);
+    DataStoreType::Close(dataStore);
   }
   return true;
 }

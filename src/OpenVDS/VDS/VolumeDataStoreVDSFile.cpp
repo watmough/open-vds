@@ -119,10 +119,10 @@ bool VolumeDataStoreVDSFile::ReadChunkImpl(const VolumeDataChunk& chunk, int ada
   }
 
   std::unique_lock<std::mutex> lock(m_mutex);
-  HueBulkDataStore::FileInterface *fileInterface = layerFile->fileInterface;
+  OpenDataStore::FileInterface *fileInterface = layerFile->fileInterface;
 
   metadata.resize(fileInterface->GetChunkMetadataLength());
-  IndexEntry indexEntry;
+  ODSIndexEntry indexEntry;
 
   bool success = fileInterface->ReadIndexEntry((int)chunk.index, &indexEntry, metadata.data());
   lock.unlock();
@@ -138,7 +138,7 @@ bool VolumeDataStoreVDSFile::ReadChunkImpl(const VolumeDataChunk& chunk, int ada
         indexEntry.m_length = Wavelet::Wavelet_DecodeAdaptiveLevelsMetadata(indexEntry.m_length, adaptiveLevel, waveletAdaptiveLevelsChunkMetadata->m_levels);
       }
 
-      HueBulkDataStore::Buffer *buffer = m_dataStore->ReadChunkData(indexEntry);
+      OpenDataStore::Buffer *buffer = m_dataStore->ReadChunkData(indexEntry);
 
       if(buffer)
       {
@@ -189,10 +189,10 @@ VolumeDataStoreVDSFile::ReadChunkDataHash(const VolumeDataChunk& chunk, uint64_t
   }
 
   std::unique_lock<std::mutex> lock(m_mutex);
-  HueBulkDataStore::FileInterface *fileInterface = layerFile->fileInterface;
+  OpenDataStore::FileInterface *fileInterface = layerFile->fileInterface;
 
   std::vector<uint8_t> metadata(fileInterface->GetChunkMetadataLength());
-  IndexEntry indexEntry;
+  ODSIndexEntry indexEntry;
 
   bool success = fileInterface->ReadIndexEntry((int)chunk.index, &indexEntry, metadata.data());
 
@@ -238,7 +238,7 @@ bool VolumeDataStoreVDSFile::WriteChunkImpl(const VolumeDataChunk& chunk, std::s
   }
 
   std::unique_lock<std::mutex> lock(m_mutex);
-  HueBulkDataStore::FileInterface *fileInterface = layerFile->fileInterface;
+  OpenDataStore::FileInterface *fileInterface = layerFile->fileInterface;
 
   if(!m_dataStore->EnableWriting())
   {
@@ -258,7 +258,7 @@ bool VolumeDataStoreVDSFile::WriteChunkImpl(const VolumeDataChunk& chunk, std::s
   VDSWaveletAdaptiveLevelsChunkMetadata const &newMetadata = *reinterpret_cast<const VDSWaveletAdaptiveLevelsChunkMetadata *>(metadata.data());
   VDSWaveletAdaptiveLevelsChunkMetadata oldMetadata;
 
-  IndexEntry indexEntry = IndexEntry();
+  ODSIndexEntry indexEntry = ODSIndexEntry();
 
   if(!serializedData->empty())
   {
@@ -390,7 +390,7 @@ bool VolumeDataStoreVDSFile::ReadSerializedVolumeDataLayout(std::vector<uint8_t>
 {
   bool isReadVDSObject = (m_isVDSObjectFilePresent && !m_isVolumeDataLayoutFilePresent);
 
-  HueBulkDataStore::FileInterface *fileInterface = m_dataStore->OpenFile(isReadVDSObject ? "VDSObject" : "VolumeDataLayout");
+  OpenDataStore::FileInterface *fileInterface = m_dataStore->OpenFile(isReadVDSObject ? "VDSObject" : "VolumeDataLayout");
 
   if(!fileInterface)
   {
@@ -399,7 +399,7 @@ bool VolumeDataStoreVDSFile::ReadSerializedVolumeDataLayout(std::vector<uint8_t>
     return false;
   }
 
-  HueBulkDataStore::Buffer *buffer = fileInterface->ReadChunk(0, nullptr);
+  OpenDataStore::Buffer *buffer = fileInterface->ReadChunk(0, nullptr);
 
   if(!buffer)
   {
@@ -412,7 +412,7 @@ bool VolumeDataStoreVDSFile::ReadSerializedVolumeDataLayout(std::vector<uint8_t>
   m_dataStore->CloseFile(fileInterface);
 
   // auto-release buffer when it goes out of scope
-  std::unique_ptr< HueBulkDataStore::Buffer, decltype(&HueBulkDataStore::ReleaseBuffer)> bufferGuard(buffer, &HueBulkDataStore::ReleaseBuffer);
+  std::unique_ptr< OpenDataStore::Buffer, decltype(&OpenDataStore::ReleaseBuffer)> bufferGuard(buffer, &OpenDataStore::ReleaseBuffer);
 
   if(isReadVDSObject)
   {
@@ -494,7 +494,7 @@ std::vector<uint8_t> VolumeDataStoreVDSFile::ParseVDSObject(std::string const &p
 
 bool VolumeDataStoreVDSFile::WriteSerializedVolumeDataLayout(const std::vector<uint8_t>& serializedVolumeDataLayout, Error &error)
 {
-  HueBulkDataStore::FileInterface *fileInterface = m_dataStore->AddFile("VolumeDataLayout", 1, 1, FILETYPE_JSON_OBJECT, 0, 0, true);
+  OpenDataStore::FileInterface *fileInterface = m_dataStore->AddFile("VolumeDataLayout", 1, 1, FILETYPE_JSON_OBJECT, 0, 0, true);
 
   if(!fileInterface)
   {
@@ -562,7 +562,7 @@ bool VolumeDataStoreVDSFile::AddLayer(VolumeDataLayer* volumeDataLayer, int chun
     fileMetadataLength  = int(sizeof(VDSLayerMetadataWaveletAdaptive));
   }
 
-  HueBulkDataStore::FileInterface *fileInterface = m_dataStore->AddFile(layerName.c_str(), (int)volumeDataLayer->GetTotalChunkCount(), chunkMetadataPageSize, FILETYPE_VDS_LAYER, chunkMetadataLength, fileMetadataLength, overwriteExisting);
+  OpenDataStore::FileInterface *fileInterface = m_dataStore->AddFile(layerName.c_str(), (int)volumeDataLayer->GetTotalChunkCount(), chunkMetadataPageSize, FILETYPE_VDS_LAYER, chunkMetadataLength, fileMetadataLength, overwriteExisting);
   assert(fileInterface);
 
   VDSLayerMetadataWaveletAdaptive layerMetadata = VDSLayerMetadataWaveletAdaptive();
@@ -608,20 +608,20 @@ VolumeDataStoreVDSFile::VolumeDataStoreVDSFile(VDS &vds, const std::string &vdsF
   , m_vds(vds)
   , m_isVDSObjectFilePresent(false)
   , m_isVolumeDataLayoutFilePresent(false)
-  , m_dataStore(nullptr, &HueBulkDataStore::Close)
+  , m_dataStore(nullptr, &OpenDataStore::Close)
 {
   if (mode == Mode::Create)
   {
-    m_dataStore.reset(HueBulkDataStore::CreateNew(vdsFileName.c_str(), true));
+    m_dataStore.reset(OpenDataStore::CreateNew(vdsFileName.c_str(), true));
   }
   else
   {
-    m_dataStore.reset(HueBulkDataStore::Open(vdsFileName.c_str()));
+    m_dataStore.reset(OpenDataStore::Open(vdsFileName.c_str()));
     if (mode == ReadWrite)
     {
       if (!m_dataStore->IsOpen())
       {
-        m_dataStore.reset(HueBulkDataStore::CreateNew(vdsFileName.c_str(), false));
+        m_dataStore.reset(OpenDataStore::CreateNew(vdsFileName.c_str(), false));
       }
       else
       {
@@ -640,7 +640,7 @@ VolumeDataStoreVDSFile::VolumeDataStoreVDSFile(VDS &vds, const std::string &vdsF
 
       if(fileType == FILETYPE_VDS_LAYER)
       {
-        HueBulkDataStore::FileInterface *
+        OpenDataStore::FileInterface *
           fileInterface = m_dataStore->OpenFile(m_dataStore->GetFileName(fileIndex));
 
         if(!fileInterface)

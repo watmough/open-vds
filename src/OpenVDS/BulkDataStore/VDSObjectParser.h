@@ -5,8 +5,13 @@
 #include <vector>
 #include <stack>
 #include <memory>
+#ifdef USE_OPEN_DATA_STORE
+#include <OpenDataStore/OpenDataStore.hpp>
+using DataStoreType = OpenDataStore;
+#else
 #include "HueBulkDataStore.h"
-#include "HueBulkDataStoreFormat.h"
+using DataStoreType = HueBulkDataStore;
+#endif
 
 #define CREATEOBJECT "CreateObj"
 
@@ -186,7 +191,7 @@ class Parser
 {
 private:
   std::unique_ptr<ParserState> ps;
-  HueBulkDataStore::Buffer * chunkBuffer;
+  DataStoreType::Buffer * chunkBuffer;
   std::unique_ptr<Json::Value> root;
   const char *buffer;
 public:
@@ -201,7 +206,7 @@ public:
   {
     if (chunkBuffer != nullptr)
     {
-      HueBulkDataStore::ReleaseBuffer(chunkBuffer);
+      DataStoreType::ReleaseBuffer(chunkBuffer);
     }
   }
   bool ReadSerializedVDSObject(const char *vdsFileName);

@@ -128,7 +128,4 @@ public:
     static void ReleaseBuffer(Buffer* buffer);
 };
 
-// Provide typedefs for compatibility with test code expecting IndexEntry
-using IndexEntry = ODSIndexEntry;
-
 #endif // OPENDATASTORE_HPP

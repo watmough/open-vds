@@ -158,18 +158,32 @@ set_source_files_properties(VDS/FSE/entropy_common.cpp PROPERTIES COMPILE_FLAGS 
 set_source_files_properties(VDS/FSE/fse_decompress.cpp PROPERTIES COMPILE_FLAGS ${DISABLE_WARNING_FLAG})
 
 if (NOT EMSCRIPTEN)
+  # OpenDataStore replaces HueBulkDataStore for main library
+  add_library(ods_objects STATIC
+    OpenDataStore/OpenDataStore.cpp
+    BulkDataStore/VDSObjectParser.cpp )
+  get_target_property(json_cpp_include_dir jsoncpp_lib_static INTERFACE_INCLUDE_DIRECTORIES)
+  target_include_directories(ods_objects PRIVATE ${json_cpp_include_dir})
+  target_compile_definitions(ods_objects PRIVATE -DHUEBDS_EXPORTS= -DUSE_OPEN_DATA_STORE=1)
+  target_compile_definitions(ods_objects PRIVATE -D_CRT_SECURE_NO_WARNINGS=1)
+  setCommonTargetProperties(ods_objects)
+  target_link_libraries(ods_objects PRIVATE fmt::fmt)
+  target_include_directories(ods_objects
+      PUBLIC
+          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+          $<BUILD_INTERFACE:${COMMON_DIR}>
+  )
+
+  # Keep hue_bds_objects for tools/HueBDS standalone tool
   add_library(hue_bds_objects STATIC
     BulkDataStore/HueBulkDataStore.cpp
     BulkDataStore/ExtentAllocator.cpp
     BulkDataStore/VDSObjectParser.cpp )
-  get_target_property(json_cpp_include_dir jsoncpp_lib_static INTERFACE_INCLUDE_DIRECTORIES)
   target_include_directories(hue_bds_objects PRIVATE ${json_cpp_include_dir})
-  target_compile_definitions(hue_bds_objects PRIVATE -DHUEBDS_EXPORTS= ) # We're not building HueBulkDataStore as a shared library
-  target_compile_definitions(hue_bds_objects PRIVATE -D_CRT_SECURE_NO_WARNINGS=1) # We're not building HueBulkDataStore as a shared library
+  target_compile_definitions(hue_bds_objects PRIVATE -DHUEBDS_EXPORTS= )
+  target_compile_definitions(hue_bds_objects PRIVATE -D_CRT_SECURE_NO_WARNINGS=1)
   setCommonTargetProperties(hue_bds_objects)
-
   target_link_libraries(hue_bds_objects PRIVATE fmt::fmt)
-
   target_include_directories(hue_bds_objects
       PUBLIC
           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -357,7 +371,7 @@ if (NOT EMSCRIPTEN)
     endif()
   endif()
 
-  target_link_libraries(openvds_objects PRIVATE hue_bds_objects)
+  target_link_libraries(openvds_objects PRIVATE ods_objects)
 endif()
 
 target_compile_definitions(openvds_objects PRIVATE -DHUEBDS_EXPORTS= ) # We're not building HueBulkDataStore as a shared library

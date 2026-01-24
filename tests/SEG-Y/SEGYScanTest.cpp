@@ -30,7 +30,9 @@ TEST(SEGYScanTest, scan)
     error;
 
   std::string
-    fileName = TEST_DATA_PATH R"(/SEGY/TeapotDome/filt_mig.sgy)";
+    fileName = TEST_DATA_PATH R"(/SEGY/bonaventure_subset.segy)";
+
+  std::cout << "Test started: " << fileName << std::endl;
 
   if(!OpenVDS::File::Exists(fileName))
   {
@@ -63,7 +65,7 @@ TEST(SEGYScanTest, scan)
     }
   }
 
-  EXPECT_TRUE(fileInfo.m_segmentInfoLists.front().back().m_traceStop == fileInfo.m_traceCounts[0] - 1);
+  EXPECT_EQ(fileInfo.m_segmentInfoLists.front().back().m_traceStop, fileInfo.m_traceCounts[0] - 1);
 }
 
 TEST(SEGYScanTest, GetFileOrObjectName)
