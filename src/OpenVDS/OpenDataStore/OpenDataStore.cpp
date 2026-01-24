@@ -1,4 +1,5 @@
 #include "OpenDataStore.hpp"
+#include "BulkDataStore/ExtentAllocator.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -81,6 +82,9 @@ public:
     // Free space tracking: offset -> size
     std::map<int64_t, int64_t> m_freeExtents;
     int64_t m_fileSize = 0;
+
+    // ExtentAllocator for HueBDS check command compatibility
+    std::unique_ptr<ExtentAllocator> m_extentAllocator;
 
     // Track modified state
     bool m_headerDirty = false;
@@ -322,10 +326,111 @@ public:
 
     const char* GetErrorMessage() override { return m_errorMessage.c_str(); }
 
+    ExtentAllocator& GetExtentAllocator() override {
+        assert(m_extentAllocator && "Must call BuildExtentAllocator first");
+        return *m_extentAllocator;
+    }
+
+    bool buildExtentAllocatorForPageDirectory(const ODSFileHeader& fileHeader,
+                                               int64_t pageDirectoryOffset,
+                                               int32_t chunkCount) {
+        if (pageDirectoryOffset == 0) return true;
+
+        int indexPageCount = (chunkCount + fileHeader.m_indexPageEntryCount - 1)
+                             / fileHeader.m_indexPageEntryCount;
+        int pageDirLogicalSize = sizeof(ODSPageDirectory) + fileHeader.m_fileMetadataLength
+                                 + sizeof(int64_t) * indexPageCount;
+
+        // Page directory uses overallocation
+        int64_t pageDirAllocatedSize = allocSizeWithSlack(pageDirLogicalSize);
+        m_extentAllocator->AddReference(pageDirectoryOffset, static_cast<int32_t>(pageDirAllocatedSize),
+                                         ExtentAllocator::PageDirectoryExtent);
+
+        // Read page directory to get index page offsets and previous revision
+        std::vector<uint8_t> pageDirData(pageDirLogicalSize);
+        if (!readAt(pageDirectoryOffset, pageDirData.data(), pageDirLogicalSize)) {
+            return false;
+        }
+
+        auto* pageDir = reinterpret_cast<const ODSPageDirectory*>(pageDirData.data());
+
+        // Recursively process previous revision
+        if (pageDir->m_previousPageDirectoryOffset != 0) {
+            if (!buildExtentAllocatorForPageDirectory(fileHeader,
+                    pageDir->m_previousPageDirectoryOffset,
+                    pageDir->m_previousChunkCount)) {
+                return false;
+            }
+        }
+
+        // Get index page offsets
+        const int64_t* indexPageOffsets = reinterpret_cast<const int64_t*>(
+            pageDirData.data() + sizeof(ODSPageDirectory) + fileHeader.m_fileMetadataLength);
+
+        int indexEntrySize = sizeof(ODSIndexEntry) + fileHeader.m_chunkMetadataLength;
+        int indexPageLogicalSize = fileHeader.m_indexPageEntryCount * indexEntrySize;
+        int64_t indexPageAllocatedSize = allocSizeWithSlack(indexPageLogicalSize);
+
+        for (int indexPage = 0; indexPage < indexPageCount; indexPage++) {
+            int64_t indexPageOffset = indexPageOffsets[indexPage];
+            if (indexPageOffset == 0) continue;
+
+            // Index page uses overallocation
+            m_extentAllocator->AddReference(indexPageOffset, static_cast<int32_t>(indexPageAllocatedSize),
+                                             ExtentAllocator::IndexPageExtent);
+
+            // Read index page to get chunk offsets
+            std::vector<uint8_t> indexPageData(indexPageLogicalSize);
+            if (!readAt(indexPageOffset, indexPageData.data(), indexPageLogicalSize)) {
+                return false;
+            }
+
+            // Process each chunk entry in this index page
+            for (int entryIdx = 0; entryIdx < fileHeader.m_indexPageEntryCount; entryIdx++) {
+                auto* entry = reinterpret_cast<const ODSIndexEntry*>(
+                    indexPageData.data() + entryIdx * indexEntrySize);
+
+                if (entry->m_offset != 0 && entry->m_length > 0) {
+                    // Chunk data uses overallocation
+                    int64_t chunkAllocatedSize = allocSizeWithSlack(entry->m_length);
+                    m_extentAllocator->AddReference(entry->m_offset, static_cast<int32_t>(chunkAllocatedSize),
+                                                     ExtentAllocator::ChunkExtent);
+                }
+            }
+        }
+
+        return true;
+    }
+
     bool BuildExtentAllocator() override {
-        // For simplicity, just track that file ends at current size
-        // Real implementation would scan all extents
-        m_freeExtents.clear();
+        if (m_extentAllocator) return true;  // Already built
+
+        m_extentAllocator = std::make_unique<ExtentAllocator>(m_fileSize);
+
+        // Header - NOT overallocated, written directly at offset 0
+        m_extentAllocator->AddReference(0, sizeof(ODSDataStoreHeader),
+                                         ExtentAllocator::DataStoreHeaderExtent);
+
+        // File table - uses overallocation
+        if (m_header.m_fileTableCount > 0 && m_header.m_fileTableOffset > 0) {
+            int64_t logicalSize = m_header.m_fileTableCount * fileTableEntrySize();
+            int64_t allocatedSize = allocSizeWithSlack(logicalSize);
+            m_extentAllocator->AddReference(m_header.m_fileTableOffset, static_cast<int32_t>(allocatedSize),
+                                             ExtentAllocator::FileTableExtent);
+        }
+
+        // For each file, scan page directories and index pages
+        for (const auto& desc : m_files) {
+            if (desc.removed) continue;
+            if (desc.header.m_headPageDirectoryOffset == 0) continue;
+
+            if (!buildExtentAllocatorForPageDirectory(desc.header,
+                    desc.header.m_headPageDirectoryOffset,
+                    desc.header.m_headChunkCount)) {
+                return false;
+            }
+        }
+
         return true;
     }
 

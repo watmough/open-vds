@@ -1,5 +1,5 @@
 include(${PROJECT_SOURCE_DIR}/CMake/CompileInTarget.cmake)
-add_executable(HueBDS huebds.cpp Commands.cpp ParserHelper.cpp Util.cpp ${COMMON_DIR}/Base64/Base64.cpp $<TARGET_OBJECTS:hue_bds_objects> ${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/File.cpp ${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/Win_File.cpp ${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/Linux_File.cpp)
+add_executable(HueBDS huebds.cpp Commands.cpp ParserHelper.cpp Util.cpp ${COMMON_DIR}/Base64/Base64.cpp $<TARGET_OBJECTS:ods_objects> ${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/File.cpp ${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/Win_File.cpp ${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/Linux_File.cpp)
 
 setCompilerFlagsForTools(HueBDS)
 if (WIN32)
@@ -8,9 +8,9 @@ elseif (UNIX)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/src/OpenVDS/IO/Win_File.cpp PROPERTIES HEADER_FILE_ONLY TRUE)
 endif()
 
-target_link_libraries(HueBDS PRIVATE hue_bds_objects fmt::fmt)
+target_link_libraries(HueBDS PRIVATE ods_objects fmt::fmt)
 target_include_directories(HueBDS PRIVATE ${PROJECT_SOURCE_DIR}/src/OpenVDS ${PROJECT_SOURCE_DIR}/src/OpenVDS/BulkDataStore)
-target_compile_definitions(HueBDS PRIVATE _CRT_SECURE_NO_WARNINGS=1 OPENVDS_STATIC_DEFINE)
+target_compile_definitions(HueBDS PRIVATE _CRT_SECURE_NO_WARNINGS=1 OPENVDS_STATIC_DEFINE USE_OPEN_DATA_STORE=1)
 compileInTarget(HueBDS jsoncpp_lib_static)
 string(REPLACE " " ";" DISABLE_WARNING_FLAG ${DISABLE_WARNING_FLAG})
 openvds_target_compile_options(HueBDS PRIVATE ${DISABLE_WARNING_FLAG})

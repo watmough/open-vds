@@ -27,7 +27,12 @@
 
 #include "HueBulkDataStoreFormat.h"
 #include "HueBulkDataStoreFileTypes.h"
+#ifdef USE_OPEN_DATA_STORE
+#include <OpenDataStore/OpenDataStore.hpp>
+using HueBulkDataStore = OpenDataStore;
+#else
 #include "HueBulkDataStore.h"
+#endif
 #include "ExtentAllocator.h"
 
 #ifdef _WIN32

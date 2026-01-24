@@ -26,6 +26,15 @@ typedef unsigned __int64 uint64_t;
 #include <stdint.h>
 #endif
 
+#ifdef USE_OPEN_DATA_STORE
+// When using OpenDataStore, use its type definitions
+#include <OpenDataStore/OpenDataStore.hpp>
+using DataStoreHeader = ODSDataStoreHeader;
+using FileHeader = ODSFileHeader;
+using PageDirectory = ODSPageDirectory;
+using IndexEntry = ODSIndexEntry;
+#else
+
 struct DataStoreHeader
 {
   char     m_magic[12]; // = "HueDataStore"
@@ -57,7 +66,9 @@ struct IndexEntry
 {
   int64_t  m_offset;
   int32_t  m_length;
-  int32_t  m_reserved; 
+  int32_t  m_reserved;
 };
+
+#endif // USE_OPEN_DATA_STORE
 
 #endif //HUEBULKDATASTOREFORMAT_H

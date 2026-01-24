@@ -20,7 +20,6 @@
 
 #include "HueBulkDataStoreFileTypes.h"
 #include "HueBulkDataStoreFormat.h"
-#include "HueBulkDataStore.h"
 #include "Util.h"
 #include "ParserHelper.h"
 #include "ExtentAllocator.h"

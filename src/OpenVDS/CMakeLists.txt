@@ -161,7 +161,8 @@ if (NOT EMSCRIPTEN)
   # OpenDataStore replaces HueBulkDataStore for main library
   add_library(ods_objects STATIC
     OpenDataStore/OpenDataStore.cpp
-    BulkDataStore/VDSObjectParser.cpp )
+    BulkDataStore/VDSObjectParser.cpp
+    BulkDataStore/ExtentAllocator.cpp )
   get_target_property(json_cpp_include_dir jsoncpp_lib_static INTERFACE_INCLUDE_DIRECTORIES)
   target_include_directories(ods_objects PRIVATE ${json_cpp_include_dir})
   target_compile_definitions(ods_objects PRIVATE -DHUEBDS_EXPORTS= -DUSE_OPEN_DATA_STORE=1)
@@ -374,7 +375,7 @@ if (NOT EMSCRIPTEN)
   target_link_libraries(openvds_objects PRIVATE ods_objects)
 endif()
 
-target_compile_definitions(openvds_objects PRIVATE -DHUEBDS_EXPORTS= ) # We're not building HueBulkDataStore as a shared library
+target_compile_definitions(openvds_objects PRIVATE -DHUEBDS_EXPORTS= -DUSE_OPEN_DATA_STORE=1) # We're not building HueBulkDataStore as a shared library
 
 foreach(item ${link_3rdparty})
   target_link_libraries(openvds_objects PRIVATE ${item})

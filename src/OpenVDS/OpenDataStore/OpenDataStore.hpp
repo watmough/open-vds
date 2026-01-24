@@ -41,6 +41,9 @@ struct ODSIndexEntry {
     int32_t  m_reserved;
 };
 
+// Forward declaration for ExtentAllocator (defined in BulkDataStore/ExtentAllocator.h)
+class ExtentAllocator;
+
 class OpenDataStore {
 public:
     // Buffer class for chunk data
@@ -97,6 +100,7 @@ public:
 
     virtual const char* GetErrorMessage() = 0;
     virtual bool BuildExtentAllocator() = 0;
+    virtual ExtentAllocator& GetExtentAllocator() = 0;
     virtual bool EnableWriting() = 0;
 
     virtual int GetFileCount() = 0;
@@ -126,6 +130,9 @@ public:
     static OpenDataStore* CreateNew(const char* fileName, bool overwriteExisting);
     static void Close(OpenDataStore* dataStore);
     static void ReleaseBuffer(Buffer* buffer);
+
+    // Type alias for HueBulkDataStore API compatibility
+    using IndexEntry = ODSIndexEntry;
 };
 
 #endif // OPENDATASTORE_HPP
