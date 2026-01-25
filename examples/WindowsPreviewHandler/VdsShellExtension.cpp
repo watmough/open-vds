@@ -438,6 +438,19 @@ public:
         // Load splitter settings from persistent storage
         LoadSplitterSettings();
 
+        // Force window refresh if it exists (handles file switching)
+        // This ensures proper layout recalculation when switching files with splitter open,
+        // avoiding stale dimensions being used for the first render
+        if (m_hwndPreview)
+        {
+            // Get current window size and send WM_SIZE to trigger layout recalculation
+            RECT clientRect;
+            GetClientRect(m_hwndPreview, &clientRect);
+            SendMessage(m_hwndPreview, WM_SIZE, SIZE_RESTORED,
+                       MAKELPARAM(clientRect.right - clientRect.left,
+                                  clientRect.bottom - clientRect.top));
+        }
+
         return S_OK;
     }
 
