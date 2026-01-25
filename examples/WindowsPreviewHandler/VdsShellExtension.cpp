@@ -789,7 +789,7 @@ private:
             case OpenVDS::WaveletAdaptiveMode::BestQuality:
                 return L"Best";
             case OpenVDS::WaveletAdaptiveMode::Tolerance:
-                swprintf_s(buf, L"Tol %.2f", m_waveletAdaptiveTolerance);
+                swprintf_s(buf, L"Tolerance %.2f", m_waveletAdaptiveTolerance);
                 return buf;
             case OpenVDS::WaveletAdaptiveMode::Ratio:
                 swprintf_s(buf, L"Ratio %.0f", m_waveletAdaptiveRatio);
@@ -876,7 +876,7 @@ private:
         int maxControlWidth = std::max({showWidth, qualWidth, lodWidth, showLabelWidth, qualLabelWidth, lodLabelWidth});
 
         // Determine layout: vertical (left side) if wide, horizontal (bottom) if tall
-        bool vertical = (availableWidth > availableHeight);
+        bool vertical = (availableWidth > availableHeight) || true;
         m_uiIsVertical = vertical;
 
         // Calculate total bounds for background
@@ -1143,7 +1143,7 @@ private:
             {
                 float step = shiftPressed ? 0.01f : 0.1f;
                 float newVal = m_waveletAdaptiveTolerance + ((delta > 0) ? -step : step);
-                newVal = std::max(0.01f, std::min(1.0f, newVal));
+                newVal = std::max(0.01f, std::min(10.0f, newVal));
                 if (newVal != m_waveletAdaptiveTolerance)
                 {
                     m_waveletAdaptiveTolerance = newVal;

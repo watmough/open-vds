@@ -321,7 +321,7 @@ bool VdsRenderer::Initialize(IStream* pStream)
         modeStr = L"Tolerance";
     else if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Ratio)
         modeStr = L"Ratio";
-    swprintf_s(buf, L"Adaptive: %s (tol=%.3f, ratio=%.1f)", modeStr, m_waveletAdaptiveTolerance, m_waveletAdaptiveRatio);
+    swprintf_s(buf, L"Adaptive: %s (tolerance=%.3f, ratio=%.1f)", modeStr, m_waveletAdaptiveTolerance, m_waveletAdaptiveRatio);
     dbg.push_back(buf);
 
     OpenVDS::Error error;
@@ -412,7 +412,7 @@ bool VdsRenderer::Initialize(const char* filePath)
         modeStr = L"Tolerance";
     else if (m_waveletAdaptiveMode == OpenVDS::WaveletAdaptiveMode::Ratio)
         modeStr = L"Ratio";
-    swprintf_s(buf, L"Adaptive: %s (tol=%.3f, ratio=%.1f)", modeStr, m_waveletAdaptiveTolerance, m_waveletAdaptiveRatio);
+    swprintf_s(buf, L"Adaptive: %s (tolerance=%.3f, ratio=%.1f)", modeStr, m_waveletAdaptiveTolerance, m_waveletAdaptiveRatio);
     dbg.push_back(buf);
 
     OpenVDS::Error error;
@@ -1268,7 +1268,7 @@ HBITMAP VdsRenderer::RenderSlice(int sliceOnDimension, int sliceIndex, int maxSi
         // Track whether this is a slice change (for progressive LOD timing logic)
         bool sliceChanged = false;
 
-        if (ENABLE_PROGRESSIVE_LOD && useProgressiveLOD)
+        if ((ENABLE_PROGRESSIVE_LOD && useProgressiveLOD) || selectedLOD < 0)   // ### Hack to avoid crash if we selected a bad LOD (Fix the above)
         {
             // Progressive LOD loading: start fast, refine if quick
             // Check if slice or dimension changed - reset to fastest LOD

@@ -450,12 +450,12 @@ void UpdateStatusText()
         auto mode = g_app.renderer->GetWaveletAdaptiveMode();
         if (mode == OpenVDS::WaveletAdaptiveMode::Tolerance)
         {
-            swprintf_s(infoBuf, L"  |  Tol:%.2f", g_app.renderer->GetWaveletAdaptiveTolerance());
+            swprintf_s(infoBuf, L"  |  Tolerance %.2f", g_app.renderer->GetWaveletAdaptiveTolerance());
             extraInfo += infoBuf;
         }
         else if (mode == OpenVDS::WaveletAdaptiveMode::Ratio)
         {
-            swprintf_s(infoBuf, L"  |  Ratio:%.0f", g_app.renderer->GetWaveletAdaptiveRatio());
+            swprintf_s(infoBuf, L"  |  Ratio %.0f", g_app.renderer->GetWaveletAdaptiveRatio());
             extraInfo += infoBuf;
         }
     }
@@ -556,7 +556,7 @@ static std::wstring GetQualityText()
         case OpenVDS::WaveletAdaptiveMode::BestQuality:
             return L"Best";
         case OpenVDS::WaveletAdaptiveMode::Tolerance:
-            swprintf_s(buf, L"Tol %.2f", g_app.waveletAdaptiveTolerance);
+            swprintf_s(buf, L"Tolerance %.2f", g_app.waveletAdaptiveTolerance);
             return buf;
         case OpenVDS::WaveletAdaptiveMode::Ratio:
             swprintf_s(buf, L"Ratio %.0f", g_app.waveletAdaptiveRatio);
