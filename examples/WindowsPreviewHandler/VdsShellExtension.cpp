@@ -20,6 +20,7 @@
 #include <windows.h>
 #include <windowsx.h>  // For GET_X_LPARAM, GET_Y_LPARAM
 #include <shlwapi.h>
+#include <shlobj.h>    // For SHGetFolderPathW, CSIDL_LOCAL_APPDATA
 #include <thumbcache.h>
 #include <propsys.h>
 
@@ -427,6 +428,9 @@ public:
                      m_sliceIndex + 1,
                      m_renderer->GetSliceCount(m_dimension));
 
+        // Load splitter settings from persistent storage
+        LoadSplitterSettings();
+
         return S_OK;
     }
 
@@ -635,6 +639,22 @@ public:
             int x = GET_X_LPARAM(lParam);
             int y = GET_Y_LPARAM(lParam);
 
+            // Check for splitter drag
+            {
+                int pWidth, pHeight;
+                GetPhysicalClientRect(hwnd, &pWidth, &pHeight);
+                int statusBarHeight = 24;
+                int contentHeight = pHeight - statusBarHeight;
+                int splitterY = (int)(contentHeight * m_splitterRatio) - SPLITTER_HEIGHT / 2;
+
+                if (y >= splitterY && y < splitterY + SPLITTER_HEIGHT)
+                {
+                    m_draggingSplitter = true;
+                    SetCapture(hwnd);
+                    return 0;
+                }
+            }
+
             if (HandleUIClick(x, y))
             {
                 InvalidateRect(m_hwndPreview, nullptr, FALSE);
@@ -702,6 +722,64 @@ public:
 
         case WM_ERASEBKGND:
             return 1;  // We handle erase in WM_PAINT
+
+        case WM_SETCURSOR:
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+
+            int pWidth, pHeight;
+            GetPhysicalClientRect(hwnd, &pWidth, &pHeight);
+            int statusBarHeight = 24;
+            int contentHeight = pHeight - statusBarHeight;
+            int splitterY = (int)(contentHeight * m_splitterRatio) - SPLITTER_HEIGHT / 2;
+
+            if (pt.y >= splitterY && pt.y < splitterY + SPLITTER_HEIGHT)
+            {
+                SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                return TRUE;
+            }
+            break;
+        }
+
+        case WM_MOUSEMOVE:
+        {
+            if (m_draggingSplitter)
+            {
+                int y = GET_Y_LPARAM(lParam);
+                int pWidth, pHeight;
+                GetPhysicalClientRect(hwnd, &pWidth, &pHeight);
+                int statusBarHeight = 24;
+                int contentHeight = pHeight - statusBarHeight;
+
+                // Calculate new ratio
+                float newRatio = (float)(y + SPLITTER_HEIGHT / 2) / contentHeight;
+
+                // Clamp to valid range (50% to 100% for bitmap)
+                newRatio = std::max(1.0f - MAX_INFO_PANE_RATIO, std::min(1.0f, newRatio));
+
+                if (newRatio != m_splitterRatio)
+                {
+                    m_splitterRatio = newRatio;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            break;
+        }
+
+        case WM_LBUTTONUP:
+        {
+            if (m_draggingSplitter)
+            {
+                m_draggingSplitter = false;
+                ReleaseCapture();
+                SaveSplitterSettings();  // Persist on release
+                return 0;
+            }
+            break;
+        }
 
         case WM_TIMER:
             if (wParam == 1)  // Refinement timer
@@ -778,6 +856,52 @@ private:
     bool m_uiPendingReopen = false;
     std::wstring m_overlayText;
     bool m_showOverlay = false;
+
+    // Splitter configuration for info pane
+    float m_splitterRatio = 0.65f;        // Ratio of bitmap area (0.0 = all info, 1.0 = all bitmap)
+    bool m_draggingSplitter = false;
+    static constexpr int SPLITTER_HEIGHT = 6;
+    static constexpr float DEFAULT_SPLITTER_RATIO = 0.65f;
+    static constexpr float MAX_INFO_PANE_RATIO = 0.5f;   // Info pane max 50% of content
+
+    // Get settings file path for splitter persistence
+    static std::wstring GetSplitterSettingsPath()
+    {
+        wchar_t path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path)))
+        {
+            // Navigate to LocalLow from Local
+            PathRemoveFileSpecW(path);  // Remove "Local"
+            PathAppendW(path, L"LocalLow");
+            PathAppendW(path, L"VdsShellExtension-Splitter-Percent.ini");
+            return path;
+        }
+        return L"";
+    }
+
+    void LoadSplitterSettings()
+    {
+        std::wstring path = GetSplitterSettingsPath();
+        if (path.empty()) return;
+
+        wchar_t buf[32];
+        if (GetPrivateProfileStringW(L"Settings", L"SplitterRatio", L"", buf, 32, path.c_str()) > 0)
+        {
+            float ratio = (float)_wtof(buf);
+            if (ratio >= (1.0f - MAX_INFO_PANE_RATIO) && ratio <= 1.0f)
+                m_splitterRatio = ratio;
+        }
+    }
+
+    void SaveSplitterSettings()
+    {
+        std::wstring path = GetSplitterSettingsPath();
+        if (path.empty()) return;
+
+        wchar_t buf[32];
+        swprintf_s(buf, L"%.3f", m_splitterRatio);
+        WritePrivateProfileStringW(L"Settings", L"SplitterRatio", buf, path.c_str());
+    }
 
     // Get current show dimension text - uses actual dimension name from VDS
     const wchar_t* GetShowText() const
@@ -1383,41 +1507,6 @@ private:
         }
     }
 
-    void DrawVdsInfoPanel(HDC hdc, RECT rc)
-    {
-        if (!m_renderer)
-            return;
-
-        ::SetBkMode(hdc, TRANSPARENT);
-
-        HFONT hFont = CreateFontA(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
-        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-
-        // Header
-        RECT headerRect = { rc.left + 8, rc.top + 6, rc.right - 8, rc.top + 20 };
-        ::SetTextColor(hdc, RGB(60, 120, 180));
-        DrawTextA(hdc, "VDS Information", -1, &headerRect, DT_LEFT | DT_SINGLELINE);
-
-        // Content
-        ::SetTextColor(hdc, RGB(50, 50, 50));
-        auto lines = m_renderer->GetMetadataLines();
-
-        int lineHeight = 14;
-        int y = rc.top + 26;
-        int maxLines = (rc.bottom - rc.top - 32) / lineHeight;
-
-        for (size_t i = 0; i < lines.size() && (int)i < maxLines; i++)
-        {
-            RECT textRect = { rc.left + 8, y, rc.right - 8, y + lineHeight };
-            DrawTextW(hdc, lines[i].c_str(), -1, &textRect, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-            y += lineHeight;
-        }
-
-        SelectObject(hdc, hOldFont);
-        DeleteObject(hFont);
-    }
 
     void OnPaint()
     {
@@ -1428,7 +1517,14 @@ private:
         int width, height;
         GetPhysicalClientRect(m_hwndPreview, &width, &height);
         int statusBarHeight = 24;
-        int bitmapAreaHeight = height - statusBarHeight;
+        int contentHeight = height - statusBarHeight;
+
+        // Calculate pane heights from splitter ratio
+        int topPaneHeight = (int)(contentHeight * m_splitterRatio) - SPLITTER_HEIGHT / 2;
+        int splitterY = topPaneHeight;
+        int bottomPaneY = splitterY + SPLITTER_HEIGHT;
+        int bottomPaneHeight = contentHeight - bottomPaneY;
+        int bitmapAreaHeight = topPaneHeight;
 
         // Create back buffer
         HDC hdcMem = CreateCompatibleDC(hdc);
@@ -1549,6 +1645,72 @@ private:
 
                 SelectObject(hdcMem, hOldFont);
                 DeleteObject(hOverlayFont);
+            }
+
+            // === SPLITTER BAR ===
+            RECT splitterRect = { 0, splitterY, width, splitterY + SPLITTER_HEIGHT };
+            HBRUSH hSplitterBrush = CreateSolidBrush(RGB(200, 200, 200));
+            FillRect(hdcMem, &splitterRect, hSplitterBrush);
+            DeleteObject(hSplitterBrush);
+
+            // Draw grip lines on splitter (visual affordance)
+            HPEN hGripPen = CreatePen(PS_SOLID, 1, RGB(160, 160, 160));
+            HPEN hOldPen = (HPEN)SelectObject(hdcMem, hGripPen);
+            int gripY = splitterY + SPLITTER_HEIGHT / 2;
+            int gripX1 = width / 2 - 20;
+            int gripX2 = width / 2 + 20;
+            MoveToEx(hdcMem, gripX1, gripY - 1, nullptr);
+            LineTo(hdcMem, gripX2, gripY - 1);
+            MoveToEx(hdcMem, gripX1, gripY + 1, nullptr);
+            LineTo(hdcMem, gripX2, gripY + 1);
+            SelectObject(hdcMem, hOldPen);
+            DeleteObject(hGripPen);
+
+            // === INFO PANE (if visible) ===
+            if (bottomPaneHeight > 10)
+            {
+                // Info pane background
+                RECT infoPaneRect = { 0, bottomPaneY, width, height - statusBarHeight };
+                FillRect(hdcMem, &infoPaneRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+
+                // Font: 14pt Consolas
+                HFONT hInfoFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+                HFONT hOldInfoFont = (HFONT)SelectObject(hdcMem, hInfoFont);
+                SetBkMode(hdcMem, TRANSPARENT);
+                ::SetTextColor(hdcMem, RGB(0, 0, 0));
+
+                TEXTMETRICW tm;
+                GetTextMetricsW(hdcMem, &tm);
+                int lineHeight = tm.tmHeight + 2;
+
+                // Left column: metadata
+                int leftX = 8;
+                int rightX = width / 2 + 8;
+                int y = bottomPaneY + 4;
+                int maxY = height - statusBarHeight - 4;
+
+                auto metadataLines = m_renderer->GetMetadataLines();
+                for (const auto& line : metadataLines)
+                {
+                    if (y + lineHeight > maxY) break;
+                    TextOutW(hdcMem, leftX, y, line.c_str(), (int)line.length());
+                    y += lineHeight;
+                }
+
+                // Right column: technical info
+                y = bottomPaneY + 4;
+                auto techLines = m_renderer->GetTechnicalInfoLines();
+                for (const auto& line : techLines)
+                {
+                    if (y + lineHeight > maxY) break;
+                    TextOutW(hdcMem, rightX, y, line.c_str(), (int)line.length());
+                    y += lineHeight;
+                }
+
+                SelectObject(hdcMem, hOldInfoFont);
+                DeleteObject(hInfoFont);
             }
 
             // Status bar at bottom (white background, black text)
