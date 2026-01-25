@@ -400,6 +400,13 @@ public:
         }
         m_cachedSliceIndex = -1;
 
+        // Reset UI state to defaults when loading a new file
+        m_targetLOD = 0;
+        m_lodRefinementEnabled = true;
+        m_waveletAdaptiveMode = OpenVDS::WaveletAdaptiveMode::BestQuality;
+        m_waveletAdaptiveTolerance = 0.1f;
+        m_waveletAdaptiveRatio = 10.0f;
+
         // Create renderer
         m_renderer = std::make_unique<VdsRenderer>();
         m_renderer->SetLogFile(GetLogFilePath("openvds-previewpane.log").c_str());

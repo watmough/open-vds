@@ -9,7 +9,7 @@
 
   <Package Name="VDS Shell Extension"
            Language="1033"
-           Version="0.8.1.0"
+           Version="0.8.2.0"
            Manufacturer="OpenVDS Project"
            UpgradeCode="E7A3B5C1-4D2F-4E8A-9B6C-1F2E3D4A5B6C"
            InstallerVersion="500"
