@@ -408,6 +408,13 @@ public:
         m_waveletAdaptiveTolerance = 0.1f;
         m_waveletAdaptiveRatio = 10.0f;
 
+        // Reset splitter drag state (in case switching files while dragging)
+        if (m_draggingSplitter)
+        {
+            ReleaseCapture();
+            m_draggingSplitter = false;
+        }
+
         // Create renderer
         m_renderer = std::make_unique<VdsRenderer>();
         m_renderer->SetLogFile(GetLogFilePath("openvds-previewpane.log").c_str());
@@ -504,6 +511,12 @@ public:
 
     STDMETHODIMP Unload() override
     {
+        // Release capture and reset splitter drag state
+        if (m_draggingSplitter)
+        {
+            ReleaseCapture();
+            m_draggingSplitter = false;
+        }
         if (m_hwndPreview)
         {
             DestroyWindow(m_hwndPreview);
@@ -807,6 +820,12 @@ public:
         case WM_DESTROY:
             KillTimer(hwnd, 1);  // Cancel any pending refinement timer
             KillTimer(hwnd, UI_DEBOUNCE_TIMER_ID);  // Cancel any pending debounce timer
+            // Release capture and reset splitter drag state
+            if (m_draggingSplitter)
+            {
+                ReleaseCapture();
+                m_draggingSplitter = false;
+            }
             if (m_cachedBitmap)
             {
                 DeleteObject(m_cachedBitmap);
@@ -1666,8 +1685,10 @@ private:
             SelectObject(hdcMem, hOldPen);
             DeleteObject(hGripPen);
 
-            // === INFO PANE (if visible) ===
-            if (bottomPaneHeight > 10)
+            // === INFO PANE (if visible and slice cached) ===
+            // Delay drawing info panel until we have successfully cached a slice
+            // This avoids race conditions when switching files
+            if (bottomPaneHeight > 10 && m_cachedBitmap)
             {
                 // Info pane background
                 RECT infoPaneRect = { 0, bottomPaneY, width, height - statusBarHeight };

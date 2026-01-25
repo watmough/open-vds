@@ -459,7 +459,7 @@ std::vector<std::wstring> VdsRenderer::GetMetadataLines() const
 {
     std::vector<std::wstring> lines;
 
-    if (!m_layout)
+    if (!m_vdsHandle || !m_layout)
     {
         lines.push_back(L"Failed to open VDS");
         return lines;
@@ -558,7 +558,7 @@ std::vector<std::wstring> VdsRenderer::GetTechnicalInfoLines() const
 {
     std::vector<std::wstring> lines;
 
-    if (!m_layout)
+    if (!m_vdsHandle || !m_layout)
         return lines;
 
     wchar_t buf[512];
