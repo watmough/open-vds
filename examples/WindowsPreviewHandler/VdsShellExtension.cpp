@@ -84,6 +84,24 @@ void SafeRelease(T** ppT)
     }
 }
 
+// Get physical pixel dimensions from logical pixels, accounting for DPI scaling
+static void GetPhysicalClientRect(HWND hwnd, int* pWidth, int* pHeight)
+{
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int logicalWidth = rc.right - rc.left;
+    int logicalHeight = rc.bottom - rc.top;
+
+    // GetDpiForWindow requires Windows 10 1607+
+    UINT dpi = GetDpiForWindow(hwnd);
+    if (dpi == 0) dpi = 96;  // Fallback to 100% scaling
+
+    // Convert logical pixels to physical pixels
+    // At 125% scaling: dpi=120, so physical = logical * 96 / 120
+    *pWidth = MulDiv(logicalWidth, 96, dpi);
+    *pHeight = MulDiv(logicalHeight, 96, dpi);
+}
+
 // ============================================================================
 // VdsThumbnailProvider
 // ============================================================================
@@ -1290,12 +1308,9 @@ private:
             return;  // Already have the right slice cached
         }
 
-        RECT rc;
-        GetClientRect(m_hwndPreview, &rc);
-
-        // Calculate actual bitmap display area (full pane minus status bar)
-        int totalWidth = rc.right - rc.left;
-        int totalHeight = rc.bottom - rc.top;
+        // Get physical pixel dimensions (accounts for DPI scaling)
+        int totalWidth, totalHeight;
+        GetPhysicalClientRect(m_hwndPreview, &totalWidth, &totalHeight);
         int statusBarHeight = 24;
         int bitmapAreaWidth = totalWidth;
         int bitmapAreaHeight = totalHeight - statusBarHeight;
@@ -1402,11 +1417,9 @@ private:
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(m_hwndPreview, &ps);
 
-        RECT rc;
-        GetClientRect(m_hwndPreview, &rc);
-
-        int width = rc.right - rc.left;
-        int height = rc.bottom - rc.top;
+        // Get physical pixel dimensions (accounts for DPI scaling)
+        int width, height;
+        GetPhysicalClientRect(m_hwndPreview, &width, &height);
         int statusBarHeight = 24;
         int bitmapAreaHeight = height - statusBarHeight;
 
