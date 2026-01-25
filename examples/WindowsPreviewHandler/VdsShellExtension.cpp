@@ -85,6 +85,9 @@ void SafeRelease(T** ppT)
     }
 }
 
+// Forward declaration for logging (defined later in VdsPreviewHandler section)
+static void LogPreviewFmt(const char* format, ...);
+
 // Get physical pixel dimensions from logical pixels, accounting for DPI scaling
 static void GetPhysicalClientRect(HWND hwnd, int* pWidth, int* pHeight)
 {
@@ -101,6 +104,10 @@ static void GetPhysicalClientRect(HWND hwnd, int* pWidth, int* pHeight)
     // At 125% scaling: dpi=120, so physical = logical * 96 / 120
     *pWidth = MulDiv(logicalWidth, 96, dpi);
     *pHeight = MulDiv(logicalHeight, 96, dpi);
+
+    // Log DPI info for debugging
+    LogPreviewFmt("GetPhysicalClientRect: logical=%dx%d, dpi=%u, result=%dx%d",
+                  logicalWidth, logicalHeight, dpi, *pWidth, *pHeight);
 }
 
 // ============================================================================
@@ -439,16 +446,10 @@ public:
         LoadSplitterSettings();
 
         // Force window refresh if it exists (handles file switching)
-        // This ensures proper layout recalculation when switching files with splitter open,
-        // avoiding stale dimensions being used for the first render
         if (m_hwndPreview)
         {
-            // Get current window size and send WM_SIZE to trigger layout recalculation
-            RECT clientRect;
-            GetClientRect(m_hwndPreview, &clientRect);
-            SendMessage(m_hwndPreview, WM_SIZE, SIZE_RESTORED,
-                       MAKELPARAM(clientRect.right - clientRect.left,
-                                  clientRect.bottom - clientRect.top));
+            LogPreview("Re-initialization: invalidating window for repaint");
+            InvalidateRect(m_hwndPreview, nullptr, TRUE);
         }
 
         return S_OK;
@@ -457,6 +458,8 @@ public:
     // IPreviewHandler
     STDMETHODIMP SetWindow(HWND hwnd, const RECT* prc) override
     {
+        LogPreviewFmt("SetWindow() called, hwnd=%p, rect=[%d,%d,%d,%d]",
+                      hwnd, prc->left, prc->top, prc->right, prc->bottom);
         m_hwndParent = hwnd;
         m_rect = *prc;
         if (m_hwndPreview)
@@ -472,6 +475,8 @@ public:
 
     STDMETHODIMP SetRect(const RECT* prc) override
     {
+        LogPreviewFmt("SetRect() called, rect=[%d,%d,%d,%d], m_hwndPreview=%p",
+                      prc->left, prc->top, prc->right, prc->bottom, m_hwndPreview);
         m_rect = *prc;
         if (m_hwndPreview)
         {
@@ -486,6 +491,8 @@ public:
 
     STDMETHODIMP DoPreview() override
     {
+        LogPreviewFmt("DoPreview() called, m_hwndPreview=%p, m_rect=[%d,%d,%d,%d]",
+                      m_hwndPreview, m_rect.left, m_rect.top, m_rect.right, m_rect.bottom);
         // Register window class once
         static bool registered = false;
         if (!registered)
@@ -500,15 +507,16 @@ public:
             registered = true;
         }
 
-        // Create preview window
+        // Always create window at zero size, then use SetWindowPos to resize.
+        // This ensures consistent DPI virtualization behavior - Windows applies
+        // DPI scaling when SetWindowPos is called, but not when CreateWindowExW
+        // is called with explicit dimensions.
         m_hwndPreview = CreateWindowExW(
             0,
             L"VdsPreviewWindow",
             nullptr,
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-            m_rect.left, m_rect.top,
-            m_rect.right - m_rect.left,
-            m_rect.bottom - m_rect.top,
+            0, 0, 0, 0,  // Create at zero size
             m_hwndParent,
             nullptr,
             g_hInstance,
@@ -517,13 +525,25 @@ public:
         if (!m_hwndPreview)
         {
             LogPreviewFmt("CreateWindow failed: %d", GetLastError());
+            return E_FAIL;
         }
 
-        return m_hwndPreview ? S_OK : E_FAIL;
+        // Now resize via SetWindowPos to get consistent DPI virtualization
+        if (m_rect.right > m_rect.left || m_rect.bottom > m_rect.top)
+        {
+            SetWindowPos(m_hwndPreview, nullptr,
+                        m_rect.left, m_rect.top,
+                        m_rect.right - m_rect.left,
+                        m_rect.bottom - m_rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        return S_OK;
     }
 
     STDMETHODIMP Unload() override
     {
+        LogPreview("Unload() called");
         // Release capture and reset splitter drag state
         if (m_draggingSplitter)
         {
@@ -532,6 +552,7 @@ public:
         }
         if (m_hwndPreview)
         {
+            LogPreview("Unload: destroying window");
             DestroyWindow(m_hwndPreview);
             m_hwndPreview = nullptr;
         }
